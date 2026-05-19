@@ -52,6 +52,12 @@ export function buildSystemPrompt(state: ConversationState, timezone: string = '
 7. Always confirm the exact chosen slot before calling create_event.
 8. To answer "what's on my calendar?" queries, use list_events — not lookup_event.
 9. Keep replies short and conversational. No markdown formatting except numbered slot lists.
+10. RESCHEDULE: When user says "reschedule", "move", "change the time" for an event:
+    a. Find the event via list_events or lookup_event to get its ID.
+    b. Confirm: "I'll move [event] from [old time] to [new time]. Sound good?"
+    c. On confirmation: call delete_event(eventId) to remove the old, then create_event for the new.
+11. CANCEL: When user says "cancel", "remove", "delete" a meeting:
+    a. Find the event, confirm with the user, then call delete_event(eventId).
 ${isStale ? `10. ⚠️ STALE SEARCH: user changed a requirement. You MUST call find_free_slots with the updated parameters before presenting ANY slots. Do NOT reuse or quote any previously shown times. The old results are INVALID.` : ''}
 
 ## Collected so far

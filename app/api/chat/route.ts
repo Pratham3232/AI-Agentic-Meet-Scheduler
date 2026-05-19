@@ -15,7 +15,7 @@ import {
   updateSlot,
 } from '@/lib/agent/state';
 import { findFreeSlots } from '@/lib/calendar/freebusy';
-import { createEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
+import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
 import { getTimeWindowBounds, formatSlotList, formatTimeSlot } from '@/lib/calendar/utils';
 import { resolveConflict } from '@/lib/agent/conflict-resolver';
 import { DebugLogger } from '@/lib/debug';
@@ -149,6 +149,7 @@ async function executeTool(
     const toolResult = {
       count: events.length,
       events: events.map(e => ({
+        id: e.id,
         summary: e.summary ?? '(no title)',
         start: e.start?.dateTime,
         end:   e.end?.dateTime,
@@ -172,10 +173,28 @@ async function executeTool(
 
     return {
       toolResult: event
-        ? { found: true, summary: event.summary, start: event.start.dateTime, end: event.end.dateTime }
+        ? { found: true, id: event.id, summary: event.summary, start: event.start.dateTime, end: event.end.dateTime }
         : { found: false },
       stateUpdates: {},
     };
+  }
+
+  // ── delete_event ──────────────────────────────────────────────────────────
+  if (toolName === 'delete_event') {
+    const { eventId } = args as { eventId: string };
+    try {
+      await deleteEvent(eventId);
+      debug.log({ type: 'tool_result', tool: 'delete_event', summary: `deleted ${eventId}` });
+      return {
+        toolResult: { success: true, deletedEventId: eventId },
+        stateUpdates: {},
+      };
+    } catch {
+      return {
+        toolResult: { success: false, error: 'Event not found or already deleted.' },
+        stateUpdates: {},
+      };
+    }
   }
 
   throw new Error(`Unknown tool: ${toolName}`);
@@ -310,10 +329,19 @@ export async function POST(req: NextRequest) {
     state = addMessage(state, 'assistant', displayText);
     await saveSession(state);
 
+    const formattedSlots = state.calendarResults.length > 0
+      ? state.calendarResults.slice(0, 5).map(s => ({
+          start: s.start,
+          end: s.end,
+          display: formatTimeSlot(s, timezone),
+        }))
+      : undefined;
+
     return NextResponse.json({
       message: displayText,
       voiceScript,
       sessionId,
+      slots: formattedSlots,
       state: {
         slots: state.slots,
         hasAllSlots: hasAllRequiredSlots(state),

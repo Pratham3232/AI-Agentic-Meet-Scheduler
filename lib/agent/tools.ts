@@ -72,4 +72,19 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'delete_event',
+      description: 'Delete a calendar event by its ID. Use when rescheduling (delete old, then create new) or when the user asks to cancel/remove a meeting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          eventId: { type: 'string', description: 'The event ID returned by list_events or lookup_event' },
+        },
+        required: ['eventId'],
+        additionalProperties: false,
+      },
+    },
+  },
 ];

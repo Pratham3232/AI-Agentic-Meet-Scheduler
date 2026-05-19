@@ -1,5 +1,5 @@
 import { TimeSlot } from '@/types';
-import { parseISO, addMinutes } from 'date-fns';
+import { parseISO, addMinutes, addDays } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
 export function formatTimeSlot(slot: TimeSlot, timezone: string = 'UTC'): string {
@@ -54,10 +54,18 @@ export function getTimeWindowBounds(
   if (start < now) {
     const mins      = now.getMinutes();
     const remainder = mins % 30;
-    const snapped   = remainder === 0 ? now : addMinutes(now, 30 - remainder);
-    // zero out seconds/ms
+    const snapped   = remainder === 0 ? new Date(now) : addMinutes(now, 30 - remainder);
     snapped.setSeconds(0, 0);
     start = snapped > start ? snapped : start;
+  }
+
+  // If the window has passed entirely (start >= end), roll to next day same window
+  if (start >= end) {
+    const nextDay = addDays(new Date(day + 'T00:00:00'), 1);
+    const nextDayStr = nextDay.toISOString().slice(0, 10);
+    const nextStart = fromZonedTime(`${nextDayStr}T${String(bounds.startHour).padStart(2, '0')}:00:00`, timezone);
+    const nextEnd   = fromZonedTime(`${nextDayStr}T${String(bounds.endHour).padStart(2, '0')}:00:00`, timezone);
+    return { start: nextStart.toISOString(), end: nextEnd.toISOString() };
   }
 
   return {

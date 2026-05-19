@@ -65,6 +65,14 @@ export async function listEvents(
   return items;
 }
 
+export async function deleteEvent(
+  eventId: string,
+  calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'
+): Promise<void> {
+  const calendar = await getCalendarClient();
+  await calendar.events.delete({ calendarId, eventId });
+}
+
 export async function lookupEvent(
   query: string,
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'

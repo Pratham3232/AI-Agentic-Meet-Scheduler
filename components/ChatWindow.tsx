@@ -3,12 +3,15 @@
 import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
 
+type SlotOption = { display: string; start: string; end: string };
+
 interface ChatWindowProps {
-  messages: Array<{ role: string; content: string }>;
+  messages: Array<{ role: string; content: string; slots?: SlotOption[] }>;
   isLoading: boolean;
+  onSlotPick?: (slot: SlotOption) => void;
 }
 
-export default function ChatWindow({ messages, isLoading }: ChatWindowProps) {
+export default function ChatWindow({ messages, isLoading, onSlotPick }: ChatWindowProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -22,9 +25,11 @@ export default function ChatWindow({ messages, isLoading }: ChatWindowProps) {
           key={index}
           role={message.role}
           content={message.content}
+          slots={message.slots}
+          onSlotPick={onSlotPick}
         />
       ))}
-      
+
       {isLoading && (
         <div className="message assistant">
           <div className="loading">
@@ -34,7 +39,7 @@ export default function ChatWindow({ messages, isLoading }: ChatWindowProps) {
           </div>
         </div>
       )}
-      
+
       <div ref={messagesEndRef} />
     </div>
   );
