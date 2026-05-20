@@ -15,10 +15,11 @@ import { formatInTimeZone } from 'date-fns-tz';
  * All time validation happens HERE so the LLM doesn't need to reason about it.
  */
 export async function POST(req: NextRequest) {
+  const t0 = Date.now();
   const debug = new DebugLogger();
 
   try {
-    const { toolName, args, sessionId: providedSessionId, timezone = 'UTC' } = await req.json();
+    const { toolName, args, sessionId: providedSessionId, timezone = 'UTC', workingHours } = await req.json();
     const now = new Date();
 
     const sessionId = providedSessionId || uuidv4();
@@ -27,6 +28,7 @@ export async function POST(req: NextRequest) {
     debug.log({ type: 'tool_call', tool: toolName, args });
 
     let result: Record<string, any> = {};
+    const tTool = Date.now();
 
     if (toolName === 'find_next_slot') {
       // ASAP booking: find the soonest available slot starting from NOW
@@ -41,7 +43,7 @@ export async function POST(req: NextRequest) {
       ];
       const allResults = await Promise.all(
         dayStrs.map(d => {
-          const bounds = getTimeWindowBounds(d, 'anytime', timezone, now);
+          const bounds = getTimeWindowBounds(d, 'anytime', timezone, now, workingHours);
           return findFreeSlots(bounds.start, bounds.end, duration, undefined, debug)
             .then(found => found.filter(s => new Date(s.start) >= now));
         })
@@ -72,13 +74,13 @@ export async function POST(req: NextRequest) {
 
     } else if (toolName === 'find_free_slots') {
       const { duration, day, timeWindow } = args;
-      const bounds = getTimeWindowBounds(day, timeWindow, timezone, now);
+      const bounds = getTimeWindowBounds(day, timeWindow, timezone, now, workingHours);
 
       let slots = (await findFreeSlots(bounds.start, bounds.end, duration, undefined, debug))
         .filter(s => new Date(s.start) >= now);
 
       if (slots.length === 0) {
-        const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone);
+        const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
         slots = conflict.slots.filter(s => new Date(s.start) >= now);
         result.conflictStrategy = conflict.strategy;
         result.conflictMessage = conflict.message;
@@ -159,11 +161,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Unknown tool: ${toolName}` }, { status: 400 });
     }
 
+    console.log(`[PERF][realtime/tools] tool=${toolName}: ${Date.now() - tTool}ms`);
+
     await saveSession(state);
+    console.log(`[PERF][realtime/tools] total (${toolName}): ${Date.now() - t0}ms`);
     return NextResponse.json({ result, sessionId });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[realtime/tools] error:', msg);
+    console.log(`[PERF][realtime/tools] total (error): ${Date.now() - t0}ms`);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

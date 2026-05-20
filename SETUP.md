@@ -12,12 +12,12 @@
    cp .env.local.example .env.local
    ```
    
-   Then fill in your API keys in `.env.local`:
-   - `OPENAI_API_KEY` - Get from OpenAI dashboard
+   Fill in your API keys in `.env.local`:
+   - `OPENAI_API_KEY` — Get from OpenAI dashboard
    - Google Calendar credentials (see below)
    - Upstash Redis credentials (see below)
 
-3. **Setup Google Calendar** (Option A - Recommended for dev)
+3. **Setup Google Calendar** (Option A — Recommended for dev)
    
    a. Go to [Google Cloud Console](https://console.cloud.google.com/)
    
@@ -33,7 +33,7 @@
       - Click "Create Credentials" > "OAuth client ID"
       - Application type: "Web application"
       - Add authorized redirect URI: `http://localhost:3000/oauth2callback`
-      - Download the JSON file
+      - Download the credentials JSON
    
    e. Add credentials to `.env.local`:
       ```
@@ -45,7 +45,7 @@
       ```bash
       npm run auth:google
       ```
-      This will open a browser, sign in with Google, and output your refresh token.
+      This opens a browser, prompts sign-in, and outputs your refresh token.
    
    g. Add the refresh token to `.env.local`:
       ```
@@ -73,6 +73,28 @@
    
    Open [http://localhost:3000](http://localhost:3000)
 
+## Environment Variables Reference
+
+```env
+# Required
+OPENAI_API_KEY=sk-...
+
+# Google Calendar (OAuth2 — Option A)
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REFRESH_TOKEN=
+
+# Google Calendar (Service Account — Option B, base64 of JSON key)
+# GOOGLE_SERVICE_ACCOUNT_JSON=
+
+# Calendar ID (use "primary" for the signed-in user's main calendar)
+GOOGLE_CALENDAR_ID=primary
+
+# Session store
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+```
+
 ## Alternative: Google Service Account (Production)
 
 For production deployments, use a service account instead:
@@ -80,7 +102,7 @@ For production deployments, use a service account instead:
 1. Go to Google Cloud Console > IAM & Admin > Service Accounts
 2. Create a new service account
 3. Download the JSON key file
-4. Share your Google Calendar with the service account email
+4. Share your Google Calendar with the service account email (give "Make changes to events" permission)
 5. Base64 encode the JSON and add to `.env.local`:
    ```bash
    cat service-account.json | base64
@@ -112,6 +134,8 @@ vercel --prod
 
 Add all environment variables in Vercel dashboard under Settings > Environment Variables.
 
+The voice WebRTC connection goes directly from the browser to OpenAI — no server relay for audio, just the token-minting route (`/api/realtime/session`) and tool execution route (`/api/realtime/tools`) are server-side.
+
 ## Troubleshooting
 
 **"Google OAuth2 credentials not configured"**
@@ -122,6 +146,12 @@ Add all environment variables in Vercel dashboard under Settings > Environment V
 - Ensure Redis database is active
 
 **"Failed to fetch free slots"**
-- Verify calendar API is enabled in Google Cloud Console
+- Verify Calendar API is enabled in Google Cloud Console
 - Check that calendar ID is correct (use "primary" for main calendar)
 - Ensure refresh token is valid (re-run auth:google if needed)
+
+**Voice connection failed / 404 on model**
+- The voice pipeline uses `gpt-realtime-mini`. Ensure your OpenAI API key has access to the Realtime API.
+
+**Webpack cache errors**
+- Run `rm -rf .next` and restart the dev server

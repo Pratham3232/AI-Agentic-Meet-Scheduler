@@ -10,6 +10,7 @@ export async function createEvent(
   description?: string,
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'
 ): Promise<CalendarEvent> {
+  const t0 = Date.now();
   try {
     const calendar = await getCalendarClient();
 
@@ -32,9 +33,11 @@ export async function createEvent(
       requestBody: event,
     });
 
+    console.log(`[PERF][calendar] createEvent: ${Date.now() - t0}ms`);
     return response.data as CalendarEvent;
   } catch (error) {
     console.error('Error creating event:', error);
+    console.log(`[PERF][calendar] createEvent (error): ${Date.now() - t0}ms`);
     throw error;
   }
 }
@@ -49,6 +52,7 @@ export async function listEvents(
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary',
   debug?: DebugLogger
 ): Promise<CalendarEvent[]> {
+  const t0 = Date.now();
   const calendar = await getCalendarClient();
 
   const response = await calendar.events.list({
@@ -62,6 +66,7 @@ export async function listEvents(
 
   const items = (response.data.items || []) as CalendarEvent[];
   debug?.log({ type: 'tool_result', tool: 'list_events', summary: `${items.length} event(s) found` });
+  console.log(`[PERF][calendar] listEvents: ${Date.now() - t0}ms`);
   return items;
 }
 
@@ -69,14 +74,17 @@ export async function deleteEvent(
   eventId: string,
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'
 ): Promise<void> {
+  const t0 = Date.now();
   const calendar = await getCalendarClient();
   await calendar.events.delete({ calendarId, eventId });
+  console.log(`[PERF][calendar] deleteEvent: ${Date.now() - t0}ms`);
 }
 
 export async function lookupEvent(
   query: string,
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'
 ): Promise<CalendarEvent | null> {
+  const t0 = Date.now();
   try {
     const calendar = await getCalendarClient();
 
@@ -89,7 +97,8 @@ export async function lookupEvent(
     });
 
     const events = response.data.items || [];
-    
+    console.log(`[PERF][calendar] lookupEvent: ${Date.now() - t0}ms`);
+
     if (events.length === 0) {
       return null;
     }
@@ -97,6 +106,7 @@ export async function lookupEvent(
     return events[0] as CalendarEvent;
   } catch (error) {
     console.error('Error looking up event:', error);
+    console.log(`[PERF][calendar] lookupEvent (error): ${Date.now() - t0}ms`);
     throw error;
   }
 }

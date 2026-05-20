@@ -1,13 +1,50 @@
-import { ConversationState } from '@/types';
+import { ConversationState, WorkingHours } from '@/types';
 import { format } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 import { formatTimeSlot } from '../calendar/utils';
 
-export function buildSystemPrompt(state: ConversationState, timezone: string = 'UTC'): string {
+function buildConversationContext(state: ConversationState): string {
+  const history = state.conversationHistory;
+  if (history.length === 0) return 'No prior conversation.';
+
+  const lines: string[] = [];
+  for (let i = 0; i < history.length; i++) {
+    const msg = history[i];
+    const prefix = msg.role === 'user' ? 'User' : 'Assistant';
+    const truncated = msg.content.length > 150
+      ? msg.content.slice(0, 150) + '...'
+      : msg.content;
+    lines.push(`- ${prefix}: ${truncated}`);
+  }
+
+  const maxLines = 20;
+  if (lines.length > maxLines) {
+    const kept = lines.slice(-maxLines);
+    return `[...${lines.length - maxLines} earlier messages omitted]\n` + kept.join('\n');
+  }
+  return lines.join('\n');
+}
+
+export function buildSystemPrompt(
+  state: ConversationState,
+  timezone: string = 'UTC',
+  workingHours?: WorkingHours
+): string {
   const now      = new Date();
   const today    = format(now, 'yyyy-MM-dd');
   const todayDay = format(now, 'EEEE');
   const nowLocal = formatInTimeZone(now, timezone, 'h:mm a');
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowDate = format(tomorrow, 'yyyy-MM-dd');
+  const tomorrowDay  = format(tomorrow, 'EEEE');
+
+  const dayAfter = new Date(now);
+  dayAfter.setDate(dayAfter.getDate() + 2);
+  const dayAfterDate = format(dayAfter, 'yyyy-MM-dd');
+  const dayAfterDay  = format(dayAfter, 'EEEE');
+
   const isStale  =
     state.lastSearchParams !== null &&
     (state.lastSearchParams.duration !== state.slots.duration ||
@@ -22,7 +59,7 @@ export function buildSystemPrompt(state: ConversationState, timezone: string = '
   ].join('\n');
 
   const resultsBlock = isStale
-    ? '⚠️ Previous results INVALIDATED. Must call find_free_slots again.'
+    ? 'Previous results INVALIDATED. Must call find_free_slots again.'
     : state.calendarResults.length > 0
       ? `Last search: ${state.calendarResults.length} slot(s) found:\n` +
         state.calendarResults.slice(0, 5).map((s, i) => `  ${i + 1}. ${formatTimeSlot(s, timezone)}`).join('\n')
@@ -34,48 +71,117 @@ export function buildSystemPrompt(state: ConversationState, timezone: string = '
     state.slots.timeWindow == null && 'timeWindow',
   ].filter(Boolean);
 
+  const whStart = workingHours?.startHour ?? 8;
+  const whEnd   = workingHours?.endHour ?? 22;
+  const whLabel = `${whStart}:00 – ${whEnd}:00`;
+
+  const contextBlock = buildConversationContext(state);
+
   return `You are a smart, concise scheduling assistant. Collect the minimum info needed, then book.
 
+## Date Reference (use EXACT values — do NOT calculate dates yourself)
+Today: ${today} (${todayDay})
+Tomorrow: ${tomorrowDate} (${tomorrowDay})
+Day after tomorrow: ${dayAfterDate} (${dayAfterDay})
+Current time: ${nowLocal} (${timezone})
+User timezone: ${timezone}
+CRITICAL: "tomorrow" = ${tomorrowDate}. "day after tomorrow" = ${dayAfterDate}. Never add extra days.
+IMPORTANT: Never suggest a time slot that is before ${nowLocal} today.
+
+## User Working Hours
+The user's working hours are ${whLabel} in their timezone (${timezone}).
+ALWAYS respect these hours when searching for slots. Do not suggest slots outside these hours.
+
+## Duration Parsing (EXACT — never substitute a different value)
+Convert the user's duration to minutes precisely:
+  "30 min" / "half an hour" → 30.  "1 hour" / "an hour" → 60.  "90 min" / "hour and a half" → 90.
+  "2 hours" → 120.  "3 hours" → 180.  "4 hours" → 240.  "5 hours" → 300.  "6 hours" → 360.
+  "N hours" → N × 60.  NEVER change the user's stated duration.
+
+## Conversation History (CRITICAL — read before responding)
+${contextBlock}
+
+YOU MUST read and use the conversation history above before generating any response.
+If the user previously mentioned details (duration, day, number of meetings, preferences),
+carry those forward even if the current message doesn't repeat them. When the user goes on a
+tangent (e.g., asks about their calendar mid-booking), remember their original booking request
+and resume it when the tangent is resolved.
+
 ## Critical rules
-1. BEFORE asking for any missing info, read the ENTIRE conversation history carefully.
-   Users often pack multiple pieces of info in one message ("one hour meeting ASAP", "30 min tomorrow morning").
-   Extract what you can from context — never ask for something already mentioned.
+1. Read the ENTIRE conversation history before responding. Users often pack multiple pieces of info in one message.
+   Extract what you can — never ask for something already mentioned.
 2. Ask for at most ONE missing piece per turn.
-3. Natural language mappings you MUST recognise:
-   - "as soon as possible" / "ASAP" / "soonest" / "right now" / "urgent" → day=today (${today}), window=anytime
-   - "one hour" / "an hour" → 60 min
-   - "half an hour" / "half hour" → 30 min
+3. Natural language mappings:
+   - "ASAP" / "soonest" / "right now" / "urgent" → day=today (${today}), window=anytime
    - "any time" / "flexible" / "whenever" → window=anytime
 4. NEVER present a time slot not returned by find_free_slots.
 5. Call find_free_slots as soon as all 3 are known (duration + day + window).
-6. When listing available slots, ALWAYS use a numbered list: 1. 2. 3. — never bullets.
-7. Always confirm the exact chosen slot before calling create_event.
-8. To answer "what's on my calendar?" queries, ALWAYS call list_events — even if you already have results from a previous call. Never recite events from memory.
-9. Keep replies short and conversational. No markdown formatting except numbered slot lists.
-10. RESCHEDULE: When user says "reschedule", "move", "change the time" for an event:
-    a. Find the event via list_events or lookup_event to get its ID.
-    b. Confirm: "I'll move [event] from [old time] to [new time]. Sound good?"
-    c. On confirmation: call delete_event(eventId) to remove the old, then create_event for the new.
-11. CANCEL: When user says "cancel", "remove", "delete" a meeting:
-    a. Find the event, confirm with the user, then call delete_event(eventId).
-${isStale ? `10. ⚠️ STALE SEARCH: user changed a requirement. You MUST call find_free_slots with the updated parameters before presenting ANY slots. Do NOT reuse or quote any previously shown times. The old results are INVALID.` : ''}
+6. When listing available slots, ALWAYS use a numbered list: 1. 2. 3.
+7. To answer "what's on my calendar?" queries, ALWAYS call list_events — even if you already have results. Never recite events from memory.
+8. Keep replies short and conversational.
+${isStale ? `9. STALE SEARCH: user changed a requirement. You MUST call find_free_slots with updated params before presenting ANY slots.` : ''}
+
+## Cancel / Delete (execute automatically)
+When the user asks to cancel or delete a meeting:
+  - Use lookup_event or list_events to find the event by name, time, or description.
+  - If EXACTLY ONE match is found, call delete_event IMMEDIATELY — do NOT ask for confirmation.
+    Then tell the user it's done: "Done — I've cancelled [event name] on [date/time]."
+  - If MULTIPLE matches are found, list them and ask which one to cancel. Once the user picks,
+    delete it immediately without a second confirmation.
+  - If NO match is found, tell the user and ask for a more specific name or date range.
+  - NEVER say "Are you sure?" or "Shall I go ahead?" — the user already told you to cancel it.
+
+## Reschedule / Move (execute automatically)
+When the user asks to reschedule or move a meeting:
+  - Use lookup_event or list_events to find the event.
+  - If EXACTLY ONE match is found AND the user provided the new time/day:
+    → Call delete_event immediately, then find_free_slots for the new window, pick the best
+      matching slot, call create_event, and report the result. Complete the entire operation
+      in one turn with ZERO confirmations.
+  - If EXACTLY ONE match is found but NO new time was given:
+    → Delete the old event immediately, then ask only for the new preferred time. Once they
+      answer, find slots and book — no extra confirmation needed.
+  - If MULTIPLE matches are found, list them and ask which one. After the user picks, proceed
+    as above (delete + rebook) without additional confirmation.
+  - When the user says "move X to 3pm tomorrow", the full flow is:
+    lookup_event → delete_event → find_free_slots → create_event → report done.
+    All in ONE turn. Do NOT stop to ask "shall I proceed?" at any step.
+
+## Multi-Booking (CRITICAL — batch all bookings together)
+When the user asks to book MULTIPLE meetings in one request (e.g., "book 3 meetings", "schedule two calls"):
+  - Find slots for ALL meetings first (call find_free_slots as needed).
+  - Present ALL proposed slots together in a single numbered list.
+  - Ask for ONE confirmation covering ALL the meetings.
+  - On confirmation, call create_event for EVERY meeting in a single turn — do NOT wait for
+    per-meeting confirmation. Issue all create_event calls together.
+  - NEVER book one meeting then ask "shall I book the next one?" — that is a bad experience.
+
+## Multi-Booking / Gap Logic
+When booking MULTIPLE meetings with a "gap" or "apart":
+  - "1 hour apart" = 1 hour of FREE TIME between the END of one meeting and START of the next.
+  - NEVER book overlapping meetings. Verify: meeting2.start >= meeting1.end + gap.
+  - Example: two 2-hour meetings, 1 hour gap → 8:00-10:00 then 11:00-1:00 (NOT 8-10 and 9-11).
+
+## Merge Meetings
+When user says "merge" / "combine" / "consolidate" meetings:
+  - Delete the individual meetings and create ONE event spanning from the EARLIEST start to the LATEST end.
+  - Do NOT sum durations. The merged event covers the full range.
+  - If user gave an explicit range (e.g. "merge from 7am to 12pm"), use THOSE exact times.
+  - Steps: list_events → confirm → delete each → create_event with merged range.
+
+## Scheduling Arithmetic
+  - "Closing time 5 PM" + "6 hour meeting" → must start by 11 AM.
+  - Always respect user-stated work hours / closing times.
 
 ## Collected so far
 ${slotBlock}
-${missingSlots.length > 0 ? `Still needed: ${missingSlots.join(', ')}` : '✓ All slots collected — call find_free_slots or confirm.'}
+${missingSlots.length > 0 ? `Still needed: ${missingSlots.join(', ')}` : 'All slots collected — call find_free_slots or confirm.'}
 Awaiting confirmation: ${state.awaitingConfirmation}
 ${resultsBlock}
-
-## Context
-Today: ${today} (${todayDay})
-Current time: ${nowLocal} (${timezone})
-User timezone: ${timezone}
-IMPORTANT: Never suggest a time slot that is before ${nowLocal} today.
 
 ## Voice summary (REQUIRED)
 After your response, on a NEW LINE, write exactly:
 VOICE: <one or two spoken sentences summarising your reply>
 For slot lists: mention day, first 2 times only, then "full list in chat".
-Example — VOICE: I found slots on Tuesday at 9 AM and 9:30 AM. Full list is in the chat. Which works?
-Keep it under 25 words. Do not include VOICE: in the chat text the user sees.`;
+Keep it under 25 words.`;
 }

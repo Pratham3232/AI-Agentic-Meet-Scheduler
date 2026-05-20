@@ -23,8 +23,10 @@ export async function findFreeSlots(
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary',
   debug?: DebugLogger
 ): Promise<TimeSlot[]> {
+  const t0 = Date.now();
   const calendar = await getCalendarClient();
 
+  const tQuery = Date.now();
   const response = await calendar.freebusy.query({
     requestBody: {
       timeMin: startTime,
@@ -75,6 +77,8 @@ export async function findFreeSlots(
     cursor = addMinutes(cursor, SLOT_INTERVAL_MINUTES);
   }
 
+  console.log(`[PERF][calendar] freebusy.query: ${Date.now() - tQuery}ms`);
+
   debug?.log({
     type: 'freebusy_result',
     busyCount: busy.length,
@@ -82,5 +86,6 @@ export async function findFreeSlots(
     strategy: 'primary_window',
   });
 
+  console.log(`[PERF][calendar] findFreeSlots total: ${Date.now() - t0}ms`);
   return freeSlots;
 }

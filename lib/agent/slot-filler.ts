@@ -42,6 +42,7 @@ export function extractAndUpdateSlots(
   debug: DebugLogger,
   today: Date = new Date()
 ): ConversationState {
+  const t0 = Date.now();
   const changes: string[] = [];
   let updated = state;
 
@@ -78,6 +79,7 @@ export function extractAndUpdateSlots(
   }
 
   debug.log({ type: 'slot_extraction', message, changes, state: { ...updated.slots } });
+  console.log(`[PERF][slot-filler] extractAndUpdateSlots: ${Date.now() - t0}ms`);
   return updated;
 }
 

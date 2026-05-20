@@ -43,6 +43,7 @@ export function getServiceAccountClient() {
 }
 
 export async function getCalendarClient() {
+  const t0 = Date.now();
   let auth: OAuth2Client | any;
 
   if (process.env.GOOGLE_REFRESH_TOKEN) {
@@ -54,5 +55,7 @@ export async function getCalendarClient() {
     throw new Error('No Google Calendar authentication configured');
   }
 
-  return google.calendar({ version: 'v3', auth });
+  const client = google.calendar({ version: 'v3', auth });
+  console.log(`[PERF][calendar] getCalendarClient: ${Date.now() - t0}ms`);
+  return client;
 }
