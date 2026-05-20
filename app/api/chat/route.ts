@@ -153,6 +153,9 @@ async function executeTool(
         summary: e.summary ?? '(no title)',
         start: e.start?.dateTime,
         end:   e.end?.dateTime,
+        display: e.start?.dateTime && e.end?.dateTime
+          ? formatTimeSlot({ start: e.start.dateTime, end: e.end.dateTime }, timezone)
+          : 'All day',
         attendees: (e.attendees ?? []).map((a: { email: string }) => a.email),
       })),
     };
@@ -247,6 +250,7 @@ export async function POST(req: NextRequest) {
     // 5. Agentic tool loop
     let loopCount = 0;
     let finalText = '';
+    let lastListedEvents: Array<{ id: string; summary: string; display: string }> | null = null;
 
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
@@ -300,6 +304,11 @@ export async function POST(req: NextRequest) {
         // Apply state updates
         state = { ...state, ...stateUpdates } as ConversationState;
         if (stateUpdates.slots) state.slots = stateUpdates.slots as typeof state.slots;
+        if (toolName === 'list_events' && toolResult.events?.length) {
+          lastListedEvents = toolResult.events.map((e: any) => ({
+            id: e.id, summary: e.summary, display: e.display,
+          }));
+        }
 
         chatMessages.push({
           role: 'tool',
@@ -342,6 +351,7 @@ export async function POST(req: NextRequest) {
       voiceScript,
       sessionId,
       slots: formattedSlots,
+      events: lastListedEvents || undefined,
       state: {
         slots: state.slots,
         hasAllSlots: hasAllRequiredSlots(state),

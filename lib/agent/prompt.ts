@@ -50,7 +50,7 @@ export function buildSystemPrompt(state: ConversationState, timezone: string = '
 5. Call find_free_slots as soon as all 3 are known (duration + day + window).
 6. When listing available slots, ALWAYS use a numbered list: 1. 2. 3. — never bullets.
 7. Always confirm the exact chosen slot before calling create_event.
-8. To answer "what's on my calendar?" queries, use list_events — not lookup_event.
+8. To answer "what's on my calendar?" queries, ALWAYS call list_events — even if you already have results from a previous call. Never recite events from memory.
 9. Keep replies short and conversational. No markdown formatting except numbered slot lists.
 10. RESCHEDULE: When user says "reschedule", "move", "change the time" for an event:
     a. Find the event via list_events or lookup_event to get its ID.

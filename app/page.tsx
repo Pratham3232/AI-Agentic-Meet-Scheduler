@@ -4,7 +4,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import ChatWindow from '@/components/ChatWindow';
 
 type SlotOption = { display: string; start: string; end: string };
-type Message = { role: string; content: string; slots?: SlotOption[] };
+type EventItem = { id: string; summary: string; display: string };
+type Message = { role: string; content: string; slots?: SlotOption[]; events?: EventItem[] };
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
@@ -27,8 +28,9 @@ export default function Home() {
   const assistantMsgIndexRef   = useRef<number>(-1);
   // Index of the user placeholder pushed on speech_started; filled when transcript arrives
   const userMsgIndexRef        = useRef<number>(-1);
-  // Slot data from a tool call, merged into the model's next spoken transcript
+  // Tool result data stashed here, then merged into the model's next spoken transcript
   const pendingSlotsRef        = useRef<SlotOption[] | null>(null);
+  const pendingEventsRef       = useRef<EventItem[] | null>(null);
 
   const timezone = typeof window !== 'undefined'
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -52,6 +54,7 @@ export default function Home() {
 
       const assistantMsg: Message = { role: 'assistant', content: data.message };
       if (data.slots?.length) assistantMsg.slots = data.slots;
+      if (data.events?.length) assistantMsg.events = data.events;
       setMessages(prev => [...prev, assistantMsg]);
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
     } catch (err) {
@@ -78,17 +81,18 @@ export default function Home() {
       console.log('[Realtime][Tool] Result:', JSON.stringify(data.result).slice(0, 200));
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
 
-      // Stash slot data — it will be merged into the model's spoken transcript
+      // Stash tool result data — merged into the model's next spoken transcript
       // so only ONE representation appears in chat (cards), not two.
       if ((toolName === 'find_free_slots' || toolName === 'find_next_slot') && data.result?.slots?.length) {
         pendingSlotsRef.current = data.result.slots;
+      } else if (toolName === 'list_events' && data.result?.events?.length) {
+        pendingEventsRef.current = data.result.events;
       } else if (toolName === 'create_event' && data.result?.success === false) {
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: `⚠️ ${data.result.error}`,
         }]);
       }
-      // list_events: no separate message — model's spoken response handles it
 
       const dc = dcRef.current;
       if (dc && dc.readyState === 'open') {
@@ -105,6 +109,7 @@ export default function Home() {
     } catch (err) {
       console.error('[Realtime][Tool] Error:', err);
       pendingSlotsRef.current = null;
+      pendingEventsRef.current = null;
       const dc = dcRef.current;
       if (dc && dc.readyState === 'open') {
         dc.send(JSON.stringify({
@@ -149,8 +154,9 @@ You need: duration + intent (ASAP OR a specific day/window).
     "an hour" / "one hour" / "60 min" → 60 min. "90 min" / "hour and a half" → 90 min. "two hours" → 120 min.
     If duration is missing: ask exactly — "How long should the meeting be?"
 
-CHECK CALENDAR — "what's on my calendar", "what do I have", "my schedule", "show my meetings", "am I free", "what's booked", etc.
-  → Call list_events with appropriate range:
+CHECK CALENDAR — "what's on my calendar", "what do I have", "my schedule", "show my meetings", "am I free", "what's booked", "show again", etc.
+  → ALWAYS call list_events — even if you already have results from a previous call. Never recite events from memory.
+  → Use appropriate range:
       "today" → today's full day in UTC.
       "tomorrow" → next day.
       "this week" → next 7 days.
@@ -357,12 +363,18 @@ English only.`,
         console.log('[Realtime][Assistant transcript done]', text?.slice(0, 100));
 
         const slots = pendingSlotsRef.current;
+        const events = pendingEventsRef.current;
         pendingSlotsRef.current = null;
+        pendingEventsRef.current = null;
+
+        const fallback = slots?.length ? 'Here are the available slots — pick one to book:'
+          : events?.length ? 'Here\'s your schedule:' : '';
 
         const msg: Message = {
           role: 'assistant',
-          content: text || (slots?.length ? 'Here are the available slots — pick one to book:' : ''),
+          content: text || fallback,
           ...(slots?.length ? { slots } : {}),
+          ...(events?.length ? { events } : {}),
         };
 
         if (text && assistantMsgIndexRef.current >= 0) {
@@ -534,6 +546,7 @@ English only.`,
     assistantMsgIndexRef.current = -1;
     userMsgIndexRef.current = -1;
     pendingSlotsRef.current = null;
+    pendingEventsRef.current = null;
   }, []);
 
   const toggleVoice = useCallback(() => {

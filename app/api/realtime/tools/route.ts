@@ -133,6 +133,9 @@ export async function POST(req: NextRequest) {
           summary: e.summary ?? '(no title)',
           start: e.start?.dateTime,
           end: e.end?.dateTime,
+          display: e.start?.dateTime && e.end?.dateTime
+            ? formatTimeSlot({ start: e.start.dateTime, end: e.end.dateTime }, timezone)
+            : 'All day',
         })),
       };
 

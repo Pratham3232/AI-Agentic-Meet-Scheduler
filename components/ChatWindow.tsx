@@ -4,9 +4,10 @@ import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
 
 type SlotOption = { display: string; start: string; end: string };
+type EventItem = { id: string; summary: string; display: string };
 
 interface ChatWindowProps {
-  messages: Array<{ role: string; content: string; slots?: SlotOption[] }>;
+  messages: Array<{ role: string; content: string; slots?: SlotOption[]; events?: EventItem[] }>;
   isLoading: boolean;
   onSlotPick?: (slot: SlotOption) => void;
 }
@@ -26,6 +27,7 @@ export default function ChatWindow({ messages, isLoading, onSlotPick }: ChatWind
           role={message.role}
           content={message.content}
           slots={message.slots}
+          events={message.events}
           onSlotPick={onSlotPick}
         />
       ))}
