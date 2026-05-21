@@ -8,6 +8,8 @@ import { DebugLogger } from '@/lib/debug';
 import { v4 as uuidv4 } from 'uuid';
 import { addDays, format } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
+import { withCalendarAuth } from '@/lib/calendar/auth';
+import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
 /**
  * POST /api/realtime/tools
@@ -21,6 +23,12 @@ export async function POST(req: NextRequest) {
   try {
     const { toolName, args, sessionId: providedSessionId, timezone = 'UTC', workingHours } = await req.json();
     const now = new Date();
+
+    const userAuth = await resolveCalendarAuth();
+    const runWithAuth = <T>(fn: () => Promise<T>) =>
+      userAuth ? withCalendarAuth(userAuth, fn) : fn();
+
+    return await runWithAuth(async () => {
 
     const sessionId = providedSessionId || uuidv4();
     let state = (await getSession(sessionId)) ?? createInitialState(sessionId);
@@ -80,6 +88,16 @@ export async function POST(req: NextRequest) {
         .filter(s => new Date(s.start) >= now);
 
       if (slots.length === 0) {
+        const existingEvents = await listEvents(bounds.start, bounds.end, undefined, debug);
+        result.blockingEvents = existingEvents
+          .filter(e => e.start?.dateTime && e.end?.dateTime)
+          .map(e => ({
+            summary: e.summary ?? '(no title)',
+            start: e.start.dateTime,
+            end: e.end.dateTime,
+            display: formatTimeSlot({ start: e.start.dateTime!, end: e.end.dateTime! }, timezone),
+          }));
+
         const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
         slots = conflict.slots.filter(s => new Date(s.start) >= now);
         result.conflictStrategy = conflict.strategy;
@@ -166,6 +184,8 @@ export async function POST(req: NextRequest) {
     await saveSession(state);
     console.log(`[PERF][realtime/tools] total (${toolName}): ${Date.now() - t0}ms`);
     return NextResponse.json({ result, sessionId });
+
+    }); // end runWithAuth
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[realtime/tools] error:', msg);

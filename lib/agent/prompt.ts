@@ -1,5 +1,4 @@
 import { ConversationState, WorkingHours } from '@/types';
-import { format } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 import { formatTimeSlot } from '../calendar/utils';
 
@@ -31,19 +30,17 @@ export function buildSystemPrompt(
   workingHours?: WorkingHours
 ): string {
   const now      = new Date();
-  const today    = format(now, 'yyyy-MM-dd');
-  const todayDay = format(now, 'EEEE');
+  const today    = formatInTimeZone(now, timezone, 'yyyy-MM-dd');
+  const todayDay = formatInTimeZone(now, timezone, 'EEEE');
   const nowLocal = formatInTimeZone(now, timezone, 'h:mm a');
 
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowDate = format(tomorrow, 'yyyy-MM-dd');
-  const tomorrowDay  = format(tomorrow, 'EEEE');
+  const tomorrow = new Date(now.getTime() + 86400000);
+  const tomorrowDate = formatInTimeZone(tomorrow, timezone, 'yyyy-MM-dd');
+  const tomorrowDay  = formatInTimeZone(tomorrow, timezone, 'EEEE');
 
-  const dayAfter = new Date(now);
-  dayAfter.setDate(dayAfter.getDate() + 2);
-  const dayAfterDate = format(dayAfter, 'yyyy-MM-dd');
-  const dayAfterDay  = format(dayAfter, 'EEEE');
+  const dayAfter = new Date(now.getTime() + 2 * 86400000);
+  const dayAfterDate = formatInTimeZone(dayAfter, timezone, 'yyyy-MM-dd');
+  const dayAfterDay  = formatInTimeZone(dayAfter, timezone, 'EEEE');
 
   const isStale  =
     state.lastSearchParams !== null &&
@@ -77,7 +74,7 @@ export function buildSystemPrompt(
 
   const contextBlock = buildConversationContext(state);
 
-  return `You are a smart, concise scheduling assistant. Collect the minimum info needed, then book.
+  return `You are a smart, concise scheduling assistant. Your job is to find the best time for every meeting — never dead-end, always offer a path forward.
 
 ## Date Reference (use EXACT values — do NOT calculate dates yourself)
 Today: ${today} (${todayDay})
@@ -120,6 +117,28 @@ and resume it when the tangent is resolved.
 7. To answer "what's on my calendar?" queries, ALWAYS call list_events — even if you already have results. Never recite events from memory.
 8. Keep replies short and conversational.
 ${isStale ? `9. STALE SEARCH: user changed a requirement. You MUST call find_free_slots with updated params before presenting ANY slots.` : ''}
+
+## Conflict Handling (CRITICAL — never dead-end)
+When find_free_slots returns 0 slots, the tool result will include:
+  - "blockingEvents": the existing meetings that fill the requested window.
+  - "conflictStrategy" / "conflictMessage": alternative slots the system found automatically.
+  - "slots": the alternative slots (if any were found by the fallback strategies).
+
+Your response MUST follow this pattern:
+
+1. **Show the blocker**: Tell the user exactly WHAT is in the way.
+   Example: "Tuesday afternoon is blocked by 'Team Standup' (2–3 PM) and 'Design Review' (3–4:30 PM)."
+
+2. **Offer the alternative**: If the tool returned alternative slots, present them immediately.
+   Example: "But Wednesday morning is open — here are some options:"
+   Then list the alternative slots as a numbered list.
+
+3. **If NO alternatives were found either**: Suggest concrete next steps — a different day,
+   a shorter duration, or a different time window. NEVER just say "no slots available" and stop.
+   Example: "Your whole week looks packed in the afternoons. Want me to check mornings instead, or try next week?"
+
+NEVER respond with just "I couldn't find a slot" or "that time is unavailable" without explaining
+WHY (the blocking events) and WHAT to do next (alternatives or a question to narrow the search).
 
 ## Cancel / Delete (execute automatically)
 When the user asks to cancel or delete a meeting:

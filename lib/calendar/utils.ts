@@ -29,12 +29,18 @@ const DEFAULT_TIME_WINDOWS: Record<string, { startHour: number; endHour: number 
 function buildTimeWindows(wh?: WorkingHours): Record<string, { startHour: number; endHour: number }> {
   if (!wh) return DEFAULT_TIME_WINDOWS;
   const midpoint = Math.floor((wh.startHour + wh.endHour) / 2);
-  return {
+  const computed: Record<string, { startHour: number; endHour: number }> = {
     morning:   { startHour: wh.startHour, endHour: midpoint },
     afternoon: { startHour: midpoint,      endHour: Math.min(wh.endHour, 17) },
     evening:   { startHour: Math.max(midpoint, 17), endHour: wh.endHour },
     anytime:   { startHour: wh.startHour, endHour: wh.endHour },
   };
+  for (const key of Object.keys(computed)) {
+    if (computed[key].startHour >= computed[key].endHour) {
+      computed[key] = DEFAULT_TIME_WINDOWS[key];
+    }
+  }
+  return computed;
 }
 
 export function getTimeWindowBounds(
@@ -68,7 +74,13 @@ export function getTimeWindowBounds(
     const nextDayStr = nextDay.toISOString().slice(0, 10);
     const nextStart = fromZonedTime(`${nextDayStr}T${String(bounds.startHour).padStart(2, '0')}:00:00`, timezone);
     const nextEnd   = fromZonedTime(`${nextDayStr}T${String(bounds.endHour).padStart(2, '0')}:00:00`, timezone);
-    return { start: nextStart.toISOString(), end: nextEnd.toISOString() };
+    if (nextStart < nextEnd) {
+      return { start: nextStart.toISOString(), end: nextEnd.toISOString() };
+    }
+    const fallback = DEFAULT_TIME_WINDOWS[window.toLowerCase()] ?? DEFAULT_TIME_WINDOWS.anytime;
+    const fbStart = fromZonedTime(`${nextDayStr}T${String(fallback.startHour).padStart(2, '0')}:00:00`, timezone);
+    const fbEnd   = fromZonedTime(`${nextDayStr}T${String(fallback.endHour).padStart(2, '0')}:00:00`, timezone);
+    return { start: fbStart.toISOString(), end: fbEnd.toISOString() };
   }
 
   return {

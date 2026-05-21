@@ -21,6 +21,8 @@ import { resolveConflict } from '@/lib/agent/conflict-resolver';
 import { DebugLogger } from '@/lib/debug';
 import { generateVoiceScript } from '@/lib/voice-script';
 import { ConversationState, WorkingHours } from '@/types';
+import { withCalendarAuth } from '@/lib/calendar/auth';
+import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -62,15 +64,26 @@ async function executeTool(
     let slots = await findFreeSlots(bounds.start, bounds.end, duration, undefined, debug);
     let conflictStrategy: string | null = null;
     let conflictMessage = '';
+    let blockingEvents: Array<{ summary: string; start: string; end: string; display: string }> = [];
 
     if (slots.length === 0) {
+      // Fetch the events that are blocking this window so the LLM can show them
+      const existingEvents = await listEvents(bounds.start, bounds.end, undefined, debug);
+      blockingEvents = existingEvents
+        .filter(e => e.start?.dateTime && e.end?.dateTime)
+        .map(e => ({
+          summary: e.summary ?? '(no title)',
+          start: e.start.dateTime!,
+          end: e.end.dateTime!,
+          display: formatTimeSlot({ start: e.start.dateTime!, end: e.end.dateTime! }, timezone),
+        }));
+
       const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
       slots = conflict.slots;
       conflictStrategy = conflict.strategy;
       conflictMessage = conflict.message;
     }
 
-    // Update state to reflect what the LLM searched for (authoritative)
     const updatedSlots = {
       ...state.slots,
       duration,
@@ -81,10 +94,10 @@ async function executeTool(
     debug.log({
       type: 'tool_result',
       tool: 'find_free_slots',
-      summary: `${slots.length} slot(s) found, strategy=${conflictStrategy ?? 'direct'}`,
+      summary: `${slots.length} slot(s) found, strategy=${conflictStrategy ?? 'direct'}, blocking=${blockingEvents.length}`,
     });
 
-    const toolResult = {
+    const toolResult: Record<string, any> = {
       slotsFound: slots.length,
       slots: slots.slice(0, 5).map(s => ({
         start: s.start,
@@ -95,6 +108,10 @@ async function executeTool(
       conflictMessage: conflictMessage || null,
       searchParams: { duration, day, timeWindow },
     };
+
+    if (blockingEvents.length > 0) {
+      toolResult.blockingEvents = blockingEvents;
+    }
 
     console.log(`[PERF][chat] executeTool find_free_slots: ${Date.now() - tExec}ms`);
     return {
@@ -221,6 +238,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const { message, sessionId: providedSessionId, timezone = 'UTC', workingHours } = await req.json();
+
+    const userAuth = await resolveCalendarAuth();
+    const runWithAuth = <T>(fn: () => Promise<T>) =>
+      userAuth ? withCalendarAuth(userAuth, fn) : fn();
+
+    return await runWithAuth(async () => {
 
     const sessionId = providedSessionId || uuidv4();
     let state = (await getSession(sessionId)) ?? createInitialState(sessionId);
@@ -388,6 +411,8 @@ export async function POST(req: NextRequest) {
       },
       debug: debug.summary(),
     });
+
+    }); // end runWithAuth
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[SCHEDULER:error]', message);

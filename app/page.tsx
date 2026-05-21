@@ -29,10 +29,22 @@ export default function Home() {
   const [isSpeaking, setIsSpeaking]   = useState(false);
   const [workingHours, setWorkingHours] = useState<WorkingHours>(loadWorkingHours);
   const [showSettings, setShowSettings] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('workingHours', JSON.stringify(workingHours));
   }, [workingHours]);
+
+  useEffect(() => {
+    fetch('/api/auth/status')
+      .then(r => r.json())
+      .then(data => {
+        if (data.authenticated) setUserEmail(data.email);
+        setAuthChecked(true);
+      })
+      .catch(() => setAuthChecked(true));
+  }, []);
 
   const pcRef          = useRef<RTCPeerConnection | null>(null);
   const dcRef          = useRef<RTCDataChannel | null>(null);
@@ -150,19 +162,19 @@ export default function Home() {
   // ── Build session config for GA Realtime API ───────────────────────────────
   const buildSessionConfig = useCallback(() => {
     const now      = new Date();
-    const today    = now.toISOString().slice(0, 10);
-    const dayName  = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const today    = now.toLocaleDateString('en-CA', { timeZone: timezone });
+    const dayName  = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
     const timeStr  = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: timezone });
 
     const tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const tomorrowDate = tomorrow.toISOString().slice(0, 10);
-    const tomorrowDay  = tomorrow.toLocaleDateString('en-US', { weekday: 'long' });
+    const tomorrowDate = tomorrow.toLocaleDateString('en-CA', { timeZone: timezone });
+    const tomorrowDay  = tomorrow.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
 
     const dayAfter = new Date(now);
     dayAfter.setDate(dayAfter.getDate() + 2);
-    const dayAfterDate = dayAfter.toISOString().slice(0, 10);
-    const dayAfterDay  = dayAfter.toLocaleDateString('en-US', { weekday: 'long' });
+    const dayAfterDate = dayAfter.toLocaleDateString('en-CA', { timeZone: timezone });
+    const dayAfterDay  = dayAfter.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
 
     return {
       type: 'realtime',
@@ -259,23 +271,32 @@ When user says "merge", "combine", "consolidate" meetings in a time range:
 When users express scheduling constraints, think through the math:
   - "Closing time is 5 PM" + "6 hour meeting" → meeting must start by 11 AM.
   - "Between 9 and 12" + "2 hour meeting" → slot must start by 10 AM.
-  - If a slot doesn't fit within the user's stated constraints, say so and explain why.
   - Always respect user-stated work hours / closing times when filtering results.
+
+━━━ CONFLICT HANDLING (CRITICAL — never dead-end) ━━━
+When find_free_slots returns 0 slots, the tool result includes:
+  - "blockingEvents": the existing meetings filling the requested window.
+  - "conflictStrategy" / "conflictMessage": alternative slots found automatically.
+
+Your response MUST:
+1. SHOW THE BLOCKER: Tell the user what is in the way.
+   Example: "Tuesday afternoon is blocked by Team Standup (2–3 PM) and Design Review (3–4:30 PM)."
+2. OFFER THE ALTERNATIVE: If the tool returned alternative slots, present them immediately.
+   Example: "But Wednesday morning is open — here are some options:"
+3. If NO alternatives found: suggest a different day, shorter duration, or different window.
+   NEVER just say "no slots available" and stop.
 
 ━━━ CONVERSATION RULES ━━━
 
-1. ALWAYS review the full conversation before responding. If the user mentioned details earlier
-   (duration, day, number of meetings), carry them forward. When the user goes on a tangent,
-   remember the original request and resume it afterward.
+1. ALWAYS review the full conversation before responding. Carry forward earlier details.
 2. Never ask for something the user already stated. Never ask two things at once.
-3. Once you have what you need, call the right tool immediately. Do not narrate that you are "searching".
+3. Once you have what you need, call the right tool immediately.
 4. After a search: present up to 3 slots as a numbered list. Say the day clearly, then the time.
-5. After listing slots: ask "Which one works for you?" — wait for explicit confirmation before booking.
-6. On confirmation: call create_event with EXACT ISO start/end times from the tool result. Never invent times.
-7. If no slots found: say so naturally and immediately offer an alternative.
-8. Meeting title: if user didn't provide one, default to "Meeting".
-9. After booking: confirm the event name, day, and time in one sentence.
-10. If the user changes their mind mid-flow, adapt — you know everything they've said.
+5. After listing slots: ask "Which one works for you?" — wait for confirmation before booking.
+6. On confirmation: call create_event with EXACT ISO start/end times from the tool result.
+7. Meeting title: if user didn't provide one, default to "Meeting".
+8. After booking: confirm the event name, day, and time in one sentence.
+9. If the user changes their mind mid-flow, adapt.
 
 ━━━ VOICE STYLE ━━━
 
@@ -716,6 +737,7 @@ English only.`,
         <div className="chat-header">
           <span>Smart Scheduler AI</span>
           <div className="header-controls">
+            {userEmail && <span className="user-email">{userEmail}</span>}
             {isVoiceActive && <span className="speaking-indicator">{isSpeaking ? '🔊' : '🎙️'}</span>}
             <button
               className="settings-toggle"
@@ -724,6 +746,18 @@ English only.`,
             >
               ⚙
             </button>
+            {userEmail && (
+              <button
+                className="settings-toggle"
+                onClick={async () => {
+                  await fetch('/api/auth/logout', { method: 'POST' });
+                  window.location.href = '/api/auth/login';
+                }}
+                title="Sign out"
+              >
+                ↪
+              </button>
+            )}
           </div>
         </div>
 

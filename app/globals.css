@@ -69,6 +69,16 @@ body {
   background: rgba(255, 255, 255, 0.35);
 }
 
+.user-email {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.85;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-panel {
   background: #f8f9fa;
   padding: 12px 20px;
