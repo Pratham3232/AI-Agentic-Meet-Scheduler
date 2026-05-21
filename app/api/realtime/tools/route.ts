@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, saveSession, createInitialState } from '@/lib/session/store';
 import { findFreeSlots } from '@/lib/calendar/slot-search';
+import {
+  initBookingJob,
+  executeBookingBatch,
+  getBookingProgress,
+} from '@/lib/agent/booking-executor';
 import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
 import { getTimeWindowBounds, formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
+import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
 import { isSlotFree, filterFutureSlots } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { v4 as uuidv4 } from 'uuid';
@@ -142,10 +148,62 @@ export async function POST(req: NextRequest) {
         ...plan,
         hint:
           plan.conflicts.length === 0
-            ? 'All days available. Confirm once, then create_event for every autoBookable entry now. Never promise to notify later.'
-            : 'Show ONLY conflict days. Do not list autoBookable days.',
+            ? 'All days available. Ask ONE confirmation, then init_booking_job with all autoBookable entries, then execute_booking_batch once. Never promise to notify later.'
+            : 'Show ONLY conflict days. Do not list autoBookable days. After user picks, init_booking_job then execute_booking_batch.',
       };
       state.awaitingConfirmation = true;
+
+    } else if (toolName === 'init_booking_job') {
+      const { entries } = args;
+      const { job, jobId, total, hint } = initBookingJob(entries ?? [], timezone);
+      state.bookingJob = job;
+      state.awaitingConfirmation = false;
+      const progress = getBookingProgress(job);
+      result = {
+        jobId,
+        total,
+        progress,
+        hint,
+        startBookingRun: progress.pending > 0,
+      };
+
+    } else if (toolName === 'execute_booking_batch') {
+      if (!state.bookingJob) {
+        result = {
+          error: 'No active booking job. Call init_booking_job first.',
+        };
+      } else {
+        const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;
+        const batchResult = await executeBookingBatch(state.bookingJob, batchSize);
+        state.bookingJob = batchResult.job;
+        result = {
+          progress: batchResult.progress,
+          bookedThisBatch: batchResult.bookedThisBatch,
+          failedThisBatch: batchResult.failedThisBatch,
+          done: batchResult.done,
+          hint: batchResult.hint,
+          startBookingRun: batchResult.progress.pending > 0,
+        };
+      }
+
+    } else if (toolName === 'identify_event') {
+      const { timeMin, timeMax, timeHint, summaryHint, day } = args;
+      result = await runIdentifyEvent(
+        timeMin,
+        timeMax,
+        { timeHint, summaryHint, day },
+        timezone
+      );
+
+    } else if (toolName === 'reschedule_event') {
+      const { eventId, newStartTime, newEndTime, confirmed } = args;
+      result = await runRescheduleEvent(
+        eventId,
+        newStartTime,
+        newEndTime,
+        confirmed,
+        timezone
+      );
 
     } else if (toolName === 'create_event') {
       const { summary, startTime, endTime, attendees = [], description } = args;

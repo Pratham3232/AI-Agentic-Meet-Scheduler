@@ -8,6 +8,7 @@ const debug = () => new DebugLogger();
 
 const blank: ConversationState = {
   sessionId: 'test',
+  bookingJob: null,
   slots: {
     duration: null,
     day: null,

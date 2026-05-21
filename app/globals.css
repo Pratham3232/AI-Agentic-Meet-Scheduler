@@ -434,3 +434,93 @@ body {
     transform: scale(1);
   }
 }
+
+.booking-progress {
+  margin: 0 16px 8px;
+  padding: 12px 14px;
+  background: #f0f4ff;
+  border: 1px solid #c5d0f5;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.booking-progress--active {
+  border-color: #667eea;
+}
+
+.booking-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-weight: 600;
+  color: #333;
+}
+
+.booking-progress-bar-wrap {
+  height: 8px;
+  background: #dde3f7;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.booking-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #667eea, #764ba2);
+  transition: width 0.3s ease;
+}
+
+.booking-progress-counters {
+  display: flex;
+  gap: 12px;
+  color: #555;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+
+.booking-progress-list {
+  list-style: none;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.booking-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid #e8ecf8;
+}
+
+.booking-item:last-child {
+  border-bottom: none;
+}
+
+.booking-item-icon {
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.booking-item--booked .booking-item-icon {
+  color: #27ae60;
+}
+
+.booking-item--failed .booking-item-icon {
+  color: #e74c3c;
+}
+
+.booking-item--pending .booking-item-icon {
+  color: #667eea;
+}
+
+.booking-item-error {
+  font-size: 11px;
+  color: #c0392b;
+  margin-left: auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

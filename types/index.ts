@@ -9,8 +9,43 @@ export interface WorkingHours {
   endHour: number;   // 0-23
 }
 
+export type BookingItemStatus = 'pending' | 'booked' | 'failed' | 'skipped';
+
+export interface BookingJobItem {
+  day: string;
+  start: string;
+  end: string;
+  summary: string;
+  status: BookingItemStatus;
+  eventId?: string;
+  error?: string;
+  display?: string;
+}
+
+export type BookingJobStatus = 'idle' | 'in_progress' | 'completed' | 'failed';
+
+export interface BookingJob {
+  id: string;
+  status: BookingJobStatus;
+  items: BookingJobItem[];
+  updatedAt: string;
+}
+
+export interface BookingProgressSnapshot {
+  jobId: string;
+  status: BookingJobStatus;
+  total: number;
+  booked: number;
+  failed: number;
+  pending: number;
+  skipped: number;
+  percent: number;
+  items: BookingJobItem[];
+}
+
 export interface ConversationState {
   sessionId: string;
+  bookingJob: BookingJob | null;
   slots: {
     duration: number | null;       // minutes
     day: string | null;            // ISO date string

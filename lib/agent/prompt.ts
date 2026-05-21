@@ -7,6 +7,7 @@ import {
   MULTI_DAY_BOOKING_RULES,
   MULTI_BOOKING_GAP_RULES,
   ASYNC_PROMISE_BAN,
+  RESCHEDULE_WORKFLOW_RULES,
 } from './prompt-shared';
 
 function buildConversationContext(state: ConversationState): string {
@@ -140,21 +141,7 @@ When the user asks to cancel or delete a meeting:
   - If NO match is found, tell the user and ask for a more specific name or date range.
   - NEVER say "Are you sure?" or "Shall I go ahead?" — the user already told you to cancel it.
 
-## Reschedule / Move (execute automatically)
-When the user asks to reschedule or move a meeting:
-  - Use lookup_event or list_events to find the event.
-  - If EXACTLY ONE match is found AND the user provided the new time/day:
-    → Call delete_event immediately, then find_free_slots for the new window, pick the best
-      matching slot, call create_event, and report the result. Complete the entire operation
-      in one turn with ZERO confirmations.
-  - If EXACTLY ONE match is found but NO new time was given:
-    → Delete the old event immediately, then ask only for the new preferred time. Once they
-      answer, find slots and book — no extra confirmation needed.
-  - If MULTIPLE matches are found, list them and ask which one. After the user picks, proceed
-    as above (delete + rebook) without additional confirmation.
-  - When the user says "move X to 3pm tomorrow", the full flow is:
-    lookup_event → delete_event → find_free_slots → create_event → report done.
-    All in ONE turn. Do NOT stop to ask "shall I proceed?" at any step.
+${RESCHEDULE_WORKFLOW_RULES}
 
 ${MULTI_DAY_BOOKING_RULES}
 

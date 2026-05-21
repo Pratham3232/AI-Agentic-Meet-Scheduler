@@ -59,6 +59,53 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
   {
     type: 'function' as const,
     function: {
+      name: 'init_booking_job',
+      description:
+        'Initialize a multi-day booking job with all entries to book. Call after user confirms the plan. Do not use create_event for each day — use execute_booking_batch instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          entries: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                day: { type: 'string', description: 'ISO date YYYY-MM-DD' },
+                start: { type: 'string', description: 'UTC ISO start datetime' },
+                end: { type: 'string', description: 'UTC ISO end datetime' },
+                summary: { type: 'string', description: 'Meeting title' },
+              },
+              required: ['day', 'start', 'end', 'summary'],
+            },
+            description: 'All days/times to book',
+          },
+        },
+        required: ['entries'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'execute_booking_batch',
+      description:
+        'Book the next batch of pending items from the active booking job (default 5). Call once after init_booking_job; the client auto-continues via SSE for the rest.',
+      parameters: {
+        type: 'object',
+        properties: {
+          batchSize: {
+            type: 'number',
+            description: 'Number of pending items to book this call (default 5)',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'create_event',
       description: 'Book the meeting on the calendar once the user confirms a specific slot',
       parameters: {
@@ -87,6 +134,45 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
           timeMax: { type: 'string', description: 'End of range as UTC ISO datetime (exclusive)' },
         },
         required: ['timeMin', 'timeMax'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'identify_event',
+      description:
+        'Find calendar events in a time range by local time hint and/or title. Always lists events server-side — use for reschedule ("4 to 7", "the 10am meeting"). Never use lookup_event alone for time-based references.',
+      parameters: {
+        type: 'object',
+        properties: {
+          timeMin: { type: 'string', description: 'UTC ISO start of search window (inclusive)' },
+          timeMax: { type: 'string', description: 'UTC ISO end of search window (exclusive)' },
+          timeHint: { type: 'string', description: 'Optional local time range e.g. "4 to 7", "4pm-7pm"' },
+          summaryHint: { type: 'string', description: 'Optional title keywords e.g. "standup"' },
+          day: { type: 'string', description: 'Optional ISO date YYYY-MM-DD for clarity' },
+        },
+        required: ['timeMin', 'timeMax'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'reschedule_event',
+      description:
+        'Reschedule an event by ID from identify_event. Set confirmed=false for preview; confirmed=true after user says yes (deletes old, creates new).',
+      parameters: {
+        type: 'object',
+        properties: {
+          eventId: { type: 'string', description: 'Event ID from identify_event' },
+          newStartTime: { type: 'string', description: 'New start UTC ISO' },
+          newEndTime: { type: 'string', description: 'New end UTC ISO' },
+          confirmed: { type: 'boolean', description: 'false = preview only; true = execute' },
+        },
+        required: ['eventId', 'newStartTime', 'newEndTime', 'confirmed'],
         additionalProperties: false,
       },
     },

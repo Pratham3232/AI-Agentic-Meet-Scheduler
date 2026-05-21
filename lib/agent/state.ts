@@ -1,4 +1,4 @@
-import { ConversationState, Message, SearchParams } from '@/types';
+import { BookingJob, ConversationState, Message, SearchParams } from '@/types';
 
 export function updateSlot(
   state: ConversationState,
@@ -91,5 +91,17 @@ export function resetSlots(state: ConversationState): ConversationState {
     calendarResults: [],
     awaitingConfirmation: false,
     lastSearchParams: null,
+    bookingJob: null,
   };
+}
+
+export function setBookingJob(
+  state: ConversationState,
+  job: BookingJob | null
+): ConversationState {
+  return { ...state, bookingJob: job };
+}
+
+export function getActiveBookingJob(state: ConversationState): BookingJob | null {
+  return state.bookingJob;
 }

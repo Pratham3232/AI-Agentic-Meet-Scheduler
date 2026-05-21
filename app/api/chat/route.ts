@@ -12,8 +12,13 @@ import {
   setAwaitingConfirmation,
   setLastSearchParams,
   hasAllRequiredSlots,
-  updateSlot,
 } from '@/lib/agent/state';
+import {
+  initBookingJob,
+  executeBookingBatch,
+  getBookingProgress,
+} from '@/lib/agent/booking-executor';
+import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
 import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
@@ -21,7 +26,7 @@ import { planMultiDayBookings } from '@/lib/agent/multi-booking';
 import { isSlotFree } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { generateVoiceScript } from '@/lib/voice-script';
-import { ConversationState, WorkingHours } from '@/types';
+import { BookingProgressSnapshot, ConversationState, WorkingHours } from '@/types';
 import { withCalendarAuth } from '@/lib/calendar/auth';
 import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
@@ -131,12 +136,101 @@ async function executeTool(
       ...plan,
       hint:
         plan.conflicts.length === 0
-          ? 'All days available. Ask ONE confirmation, then call create_event for every autoBookable entry in the same turn. Do NOT say you will notify later.'
-          : 'Show ONLY conflict days (one alternative each). Do not list autoBookable days. After user picks, book all in one turn.',
+          ? 'All days available. Ask ONE confirmation, then init_booking_job with all autoBookable entries, then execute_booking_batch once. Do NOT say you will notify later.'
+          : 'Show ONLY conflict days (one alternative each). Do not list autoBookable days. After user picks, init_booking_job then execute_booking_batch.',
     };
 
     console.log(`[PERF][chat] executeTool plan_multi_day_bookings: ${Date.now() - tExec}ms`);
     return { toolResult, stateUpdates: { awaitingConfirmation: true } };
+  }
+
+  // ── init_booking_job ──────────────────────────────────────────────────────
+  if (toolName === 'init_booking_job') {
+    const { entries } = args as {
+      entries: Array<{ day: string; start: string; end: string; summary: string }>;
+    };
+
+    const { job, jobId, total, hint } = initBookingJob(entries ?? [], timezone);
+    const progress = getBookingProgress(job);
+
+    console.log(`[PERF][chat] executeTool init_booking_job: ${Date.now() - tExec}ms`);
+    return {
+      toolResult: {
+        jobId,
+        total,
+        progress,
+        hint,
+        startBookingRun: progress.pending > 0,
+      },
+      stateUpdates: { bookingJob: job, awaitingConfirmation: false },
+    };
+  }
+
+  // ── execute_booking_batch ─────────────────────────────────────────────────
+  if (toolName === 'execute_booking_batch') {
+    if (!state.bookingJob) {
+      return {
+        toolResult: {
+          error: 'No active booking job. Call init_booking_job first.',
+          hint: 'Use plan_multi_day_bookings, confirm with user, then init_booking_job.',
+        },
+        stateUpdates: {},
+      };
+    }
+
+    const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;
+    const result = await executeBookingBatch(state.bookingJob, batchSize);
+
+    console.log(`[PERF][chat] executeTool execute_booking_batch: ${Date.now() - tExec}ms`);
+    return {
+      toolResult: {
+        progress: result.progress,
+        bookedThisBatch: result.bookedThisBatch,
+        failedThisBatch: result.failedThisBatch,
+        done: result.done,
+        hint: result.hint,
+        startBookingRun: result.progress.pending > 0,
+      },
+      stateUpdates: { bookingJob: result.job },
+    };
+  }
+
+  // ── identify_event ────────────────────────────────────────────────────────
+  if (toolName === 'identify_event') {
+    const { timeMin, timeMax, timeHint, summaryHint, day } = args as {
+      timeMin: string;
+      timeMax: string;
+      timeHint?: string;
+      summaryHint?: string;
+      day?: string;
+    };
+    const result = await runIdentifyEvent(timeMin, timeMax, { timeHint, summaryHint, day }, timezone);
+    console.log(`[PERF][chat] executeTool identify_event: ${Date.now() - tExec}ms`);
+    return { toolResult: result, stateUpdates: {} };
+  }
+
+  // ── reschedule_event ──────────────────────────────────────────────────────
+  if (toolName === 'reschedule_event') {
+    const { eventId, newStartTime, newEndTime, confirmed } = args as {
+      eventId: string;
+      newStartTime: string;
+      newEndTime: string;
+      confirmed: boolean;
+    };
+    const result = await runRescheduleEvent(
+      eventId,
+      newStartTime,
+      newEndTime,
+      confirmed,
+      timezone
+    );
+    console.log(`[PERF][chat] executeTool reschedule_event: ${Date.now() - tExec}ms`);
+    return {
+      toolResult: result,
+      stateUpdates: confirmed && 'success' in result && result.success
+        ? { awaitingConfirmation: false }
+        : {},
+    };
   }
 
   // ── create_event ──────────────────────────────────────────────────────────
@@ -326,6 +420,8 @@ export async function POST(req: NextRequest) {
     let loopCount = 0;
     let finalText = '';
     let lastListedEvents: Array<{ id: string; summary: string; display: string }> | null = null;
+    let bookingProgress: BookingProgressSnapshot | undefined;
+    let startBookingRun = false;
     const tLoop = Date.now();
 
     while (loopCount < MAX_TOOL_LOOPS) {
@@ -388,6 +484,17 @@ export async function POST(req: NextRequest) {
             id: e.id, summary: e.summary, display: e.display,
           }));
         }
+        if (toolName === 'init_booking_job' && toolResult.progress) {
+          bookingProgress = toolResult.progress as BookingProgressSnapshot;
+          startBookingRun = (toolResult.progress as BookingProgressSnapshot).pending > 0;
+        }
+        if (toolName === 'execute_booking_batch' && toolResult.progress) {
+          bookingProgress = toolResult.progress as BookingProgressSnapshot;
+          if (toolResult.startBookingRun) startBookingRun = true;
+        }
+        if (state.bookingJob && !bookingProgress) {
+          bookingProgress = getBookingProgress(state.bookingJob);
+        }
 
         chatMessages.push({
           role: 'tool',
@@ -428,6 +535,17 @@ export async function POST(req: NextRequest) {
         }))
       : undefined;
 
+    if (state.bookingJob) {
+      bookingProgress = getBookingProgress(state.bookingJob);
+      if (
+        !startBookingRun &&
+        state.bookingJob.status === 'in_progress' &&
+        bookingProgress.pending > 0
+      ) {
+        startBookingRun = true;
+      }
+    }
+
     console.log(`[PERF][chat] total request: ${Date.now() - t0}ms`);
     return NextResponse.json({
       message: displayText,
@@ -435,6 +553,8 @@ export async function POST(req: NextRequest) {
       sessionId,
       slots: formattedSlots,
       events: lastListedEvents || undefined,
+      bookingJob: bookingProgress,
+      startBookingRun: startBookingRun || undefined,
       state: {
         slots: state.slots,
         hasAllSlots: hasAllRequiredSlots(state),

@@ -17,13 +17,26 @@ Do NOT re-order slots chronologically from the start of the day.`;
 export const MULTI_DAY_BOOKING_RULES = `## Multi-day / batch booking (CRITICAL)
 For "book every day", "Mon–Fri at 10", "next 5 days":
   1. Call plan_multi_day_bookings ONCE with all days + preferredTime + durationMinutes.
-  2. If conflicts.length === 0: summarize autoBookable days, ask ONE confirmation, then call create_event for EVERY entry in the same turn.
-  3. If conflicts exist: show ONLY conflict days (one suggestedAlternative each). Do NOT list days that are auto_bookable.
-  4. After user picks alternatives for conflicts, book ALL (auto + chosen) in one turn.
+  2. Resolve conflicts with user if needed, then ONE confirmation for the full set.
+  3. Call init_booking_job with all entries (day, start, end, summary) — NOT separate create_event per day.
+  4. Call execute_booking_batch ONCE (optional first batch for voice). Tell user: "Booking the rest now — you'll see progress below."
+  5. Do NOT fire N separate create_event calls for multi-day jobs.
 
 FORBIDDEN: Never say "I'll let you know when done", "I'll inform you later", "I'll check back", or promise async follow-up. Only report bookings completed in this response.
 
-NEVER book one meeting then ask "shall I book the next?" — batch all create_event calls together.`;
+NEVER book one meeting then ask "shall I book the next?" — use the booking job flow.
+
+Single-day booking: one create_event after slot confirmation — immediate "Booked …" message.`;
+
+export const RESCHEDULE_WORKFLOW_RULES = `## Reschedule / move (mandatory order)
+1. identify_event(timeMin/timeMax for the stated day, timeHint + summaryHint from the user message).
+2. If ambiguous → list numbered matches, ask user to pick (no reschedule yet).
+3. If single bestMatch + new times known → ONE confirmation: "Move [summary] from [old] to [new]?"
+4. On user yes → reschedule_event(eventId, newStart, newEnd, confirmed=true).
+5. NEVER use lookup_event alone for time-based references ("4 to 7", "the meeting I just booked").
+6. If user says "the one you just booked" and session has bookingJob booked items, use summaryHint + timeHint from the last booked item.
+
+Do NOT delete_event + create_event manually for reschedule — use reschedule_event.`;
 
 export const MULTI_BOOKING_GAP_RULES = `## Multi-booking gap logic
 When booking MULTIPLE meetings with a "gap" or "apart":

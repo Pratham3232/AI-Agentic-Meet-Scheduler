@@ -2,12 +2,20 @@
 
 import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
+import BookingProgress from './BookingProgress';
+import type { BookingProgressSnapshot } from '@/types';
 
 type SlotOption = { display: string; start: string; end: string };
 type EventItem = { id: string; summary: string; display: string };
 
 interface ChatWindowProps {
-  messages: Array<{ role: string; content: string; slots?: SlotOption[]; events?: EventItem[] }>;
+  messages: Array<{
+    role: string;
+    content: string;
+    slots?: SlotOption[];
+    events?: EventItem[];
+    bookingProgress?: BookingProgressSnapshot;
+  }>;
   isLoading: boolean;
   onSlotPick?: (slot: SlotOption) => void;
 }
@@ -22,14 +30,18 @@ export default function ChatWindow({ messages, isLoading, onSlotPick }: ChatWind
   return (
     <div className="chat-messages">
       {messages.map((message, index) => (
-        <MessageBubble
-          key={index}
-          role={message.role}
-          content={message.content}
-          slots={message.slots}
-          events={message.events}
-          onSlotPick={onSlotPick}
-        />
+        <div key={index}>
+          <MessageBubble
+            role={message.role}
+            content={message.content}
+            slots={message.slots}
+            events={message.events}
+            onSlotPick={onSlotPick}
+          />
+          {message.bookingProgress && (
+            <BookingProgress progress={message.bookingProgress} />
+          )}
+        </div>
       ))}
 
       {isLoading && (

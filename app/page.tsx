@@ -2,17 +2,26 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import ChatWindow from '@/components/ChatWindow';
+import BookingProgress from '@/components/BookingProgress';
+import type { BookingProgressSnapshot } from '@/types';
 import {
   CONFLICT_HANDLING_RULES,
   PROXIMITY_SLOT_RULES,
   MULTI_DAY_BOOKING_RULES,
   MULTI_BOOKING_GAP_RULES,
   ASYNC_PROMISE_BAN,
+  RESCHEDULE_WORKFLOW_RULES,
 } from '@/lib/agent/prompt-shared';
 
 type SlotOption = { display: string; start: string; end: string };
 type EventItem = { id: string; summary: string; display: string };
-type Message = { role: string; content: string; slots?: SlotOption[]; events?: EventItem[] };
+type Message = {
+  role: string;
+  content: string;
+  slots?: SlotOption[];
+  events?: EventItem[];
+  bookingProgress?: BookingProgressSnapshot;
+};
 type WorkingHours = { startHour: number; endHour: number };
 
 function loadWorkingHours(): WorkingHours {
@@ -38,6 +47,7 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [bookingProgress, setBookingProgress] = useState<BookingProgressSnapshot | null>(null);
 
   useEffect(() => {
     localStorage.setItem('workingHours', JSON.stringify(workingHours));
@@ -68,10 +78,75 @@ export default function Home() {
   // Tool result data stashed here, then merged into the model's next spoken transcript
   const pendingSlotsRef        = useRef<SlotOption[] | null>(null);
   const pendingEventsRef       = useRef<EventItem[] | null>(null);
+  const pendingBookingRef      = useRef<BookingProgressSnapshot | null>(null);
 
   const timezone = typeof window !== 'undefined'
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
     : 'UTC';
+
+  const runBookingJob = useCallback(async (sid: string) => {
+    try {
+      const res = await fetch('/api/booking/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sid }),
+      });
+      if (!res.ok || !res.body) throw new Error('Booking run failed');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === 'progress' || payload.type === 'complete') {
+              const snap: BookingProgressSnapshot = {
+                jobId: payload.jobId ?? sid,
+                status: payload.status ?? (payload.type === 'complete' ? 'completed' : 'in_progress'),
+                total: payload.total ?? 0,
+                booked: payload.booked ?? 0,
+                failed: payload.failed ?? 0,
+                pending: payload.pending ?? 0,
+                skipped: payload.skipped ?? 0,
+                percent: payload.percent ?? 0,
+                items: payload.items ?? [],
+              };
+              setBookingProgress(snap);
+              setMessages(prev => {
+                const idx = prev.findIndex(m => m.role === 'assistant' && m.bookingProgress);
+                const progressMsg: Message = {
+                  role: 'assistant',
+                  content: payload.type === 'complete'
+                    ? `Booking complete — ${payload.booked} booked, ${payload.failed} failed.`
+                    : 'Booking in progress…',
+                  bookingProgress: snap,
+                };
+                if (idx >= 0) {
+                  const updated = [...prev];
+                  updated[idx] = progressMsg;
+                  return updated;
+                }
+                return [...prev, progressMsg];
+              });
+            }
+          } catch {
+            /* ignore malformed SSE chunks */
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[BookingRun]', err);
+    }
+  }, []);
 
   // ── Text chat (existing pipeline) ─────────────────────────────────────────
   const sendTextMessage = useCallback(async (text: string) => {
@@ -96,6 +171,16 @@ export default function Home() {
       if (data.events?.length) assistantMsg.events = data.events;
       setMessages(prev => [...prev, assistantMsg]);
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
+
+      const sid = data.sessionId || sessionId;
+      if (data.bookingJob) {
+        setBookingProgress(data.bookingJob);
+      }
+      if (data.startBookingRun && sid) {
+        await runBookingJob(sid);
+      } else if (data.bookingJob?.status === 'in_progress' && data.bookingJob.pending > 0) {
+        await runBookingJob(sid!);
+      }
     } catch (err) {
       setMessages(prev => [...prev, {
         role: 'assistant',
@@ -104,7 +189,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, sessionId, timezone, workingHours]);
+  }, [isLoading, sessionId, timezone, workingHours, runBookingJob]);
 
   // ── Handle tool calls from Realtime API ────────────────────────────────────
   const handleRealtimeToolCall = useCallback(async (callId: string, toolName: string, args: string) => {
@@ -128,6 +213,15 @@ export default function Home() {
         pendingSlotsRef.current = data.result.slots;
       } else if (toolName === 'list_events' && data.result?.events?.length) {
         pendingEventsRef.current = data.result.events;
+      } else if (
+        (toolName === 'init_booking_job' || toolName === 'execute_booking_batch') &&
+        data.result?.progress
+      ) {
+        pendingBookingRef.current = data.result.progress;
+        setBookingProgress(data.result.progress);
+        if (data.result.startBookingRun && data.sessionId) {
+          runBookingJob(data.sessionId);
+        }
       } else if (toolName === 'create_event' && data.result?.success === false) {
         setMessages(prev => [...prev, {
           role: 'assistant',
@@ -164,7 +258,7 @@ export default function Home() {
         dc.send(JSON.stringify({ type: 'response.create' }));
       }
     }
-  }, [sessionId, timezone, workingHours]);
+  }, [sessionId, timezone, workingHours, runBookingJob]);
 
   // ── Build session config for GA Realtime API ───────────────────────────────
   const buildSessionConfig = useCallback(() => {
@@ -247,12 +341,7 @@ CANCEL / DELETE — "cancel", "remove", "delete", "drop", "clear", etc.
   → If MULTIPLE matches: list them, ask which one, then delete immediately once picked.
   → Report: "Done — I've cancelled [name] on [date/time]."
 
-RESCHEDULE / MOVE — "reschedule", "move", "change the time", "push back", "shift", etc.
-  → Use lookup_event or list_events to find the event.
-  → If ONE match + user gave new time: delete_event → find_free_slots → create_event. Complete the full operation in ONE turn — ZERO confirmations needed.
-  → If ONE match but NO new time: delete the old event, then ask ONLY for the new preferred time. Once they answer, find slots and book immediately.
-  → If MULTIPLE matches: list them, ask which one, then proceed as above.
-  → NEVER say "shall I proceed?" or "are you sure?" at any step.
+${RESCHEDULE_WORKFLOW_RULES}
 
 ${MULTI_DAY_BOOKING_RULES}
 
@@ -327,6 +416,41 @@ English only.`,
         },
         {
           type: 'function',
+          name: 'init_booking_job',
+          description: 'Initialize multi-day booking job after user confirms. Then execute_booking_batch once.',
+          parameters: {
+            type: 'object',
+            properties: {
+              entries: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    day: { type: 'string' },
+                    start: { type: 'string' },
+                    end: { type: 'string' },
+                    summary: { type: 'string' },
+                  },
+                  required: ['day', 'start', 'end', 'summary'],
+                },
+              },
+            },
+            required: ['entries'],
+          },
+        },
+        {
+          type: 'function',
+          name: 'execute_booking_batch',
+          description: 'Book next batch from active job. Client auto-continues via SSE.',
+          parameters: {
+            type: 'object',
+            properties: {
+              batchSize: { type: 'number' },
+            },
+          },
+        },
+        {
+          type: 'function',
           name: 'plan_multi_day_bookings',
           description: 'Plan same-time bookings across multiple days. Returns autoBookable vs conflict days (one alternative per conflict).',
           parameters: {
@@ -368,8 +492,39 @@ English only.`,
         },
         {
           type: 'function',
+          name: 'identify_event',
+          description: 'Find events in a time range by time hint ("4 to 7") and/or title. Required for reschedule.',
+          parameters: {
+            type: 'object',
+            properties: {
+              timeMin: { type: 'string' },
+              timeMax: { type: 'string' },
+              timeHint: { type: 'string' },
+              summaryHint: { type: 'string' },
+              day: { type: 'string' },
+            },
+            required: ['timeMin', 'timeMax'],
+          },
+        },
+        {
+          type: 'function',
+          name: 'reschedule_event',
+          description: 'Preview (confirmed=false) or execute (confirmed=true) reschedule after identify_event.',
+          parameters: {
+            type: 'object',
+            properties: {
+              eventId: { type: 'string' },
+              newStartTime: { type: 'string' },
+              newEndTime: { type: 'string' },
+              confirmed: { type: 'boolean' },
+            },
+            required: ['eventId', 'newStartTime', 'newEndTime', 'confirmed'],
+          },
+        },
+        {
+          type: 'function',
           name: 'lookup_event',
-          description: 'Search for an event by name. Returns the event ID needed for delete_event. Use for "reschedule my standup", "cancel the kickoff", etc.',
+          description: 'Search by name only — for cancel by title, NOT for time ranges like "4 to 7".',
           parameters: {
             type: 'object',
             properties: {
@@ -381,7 +536,7 @@ English only.`,
         {
           type: 'function',
           name: 'delete_event',
-          description: 'Delete a calendar event by ID. Use when rescheduling (delete old, then create new) or cancelling. Always confirm with the user before deleting.',
+          description: 'Delete a calendar event by ID. For cancel: delete immediately after identify_event when one match. For reschedule: use reschedule_event(confirmed=true) instead of manual delete+create.',
           parameters: {
             type: 'object',
             properties: {
@@ -512,17 +667,21 @@ English only.`,
 
         const slots = pendingSlotsRef.current;
         const events = pendingEventsRef.current;
+        const booking = pendingBookingRef.current;
         pendingSlotsRef.current = null;
         pendingEventsRef.current = null;
+        pendingBookingRef.current = null;
 
         const fallback = slots?.length ? 'Here are the available slots — pick one to book:'
-          : events?.length ? 'Here\'s your schedule:' : '';
+          : events?.length ? 'Here\'s your schedule:'
+          : booking ? 'Booking your meetings — see progress below.' : '';
 
         const msg: Message = {
           role: 'assistant',
           content: text || fallback,
           ...(slots?.length ? { slots } : {}),
           ...(events?.length ? { events } : {}),
+          ...(booking ? { bookingProgress: booking } : {}),
         };
 
         if (text && assistantMsgIndexRef.current >= 0) {
@@ -701,6 +860,8 @@ English only.`,
     userMsgIndexRef.current = -1;
     pendingSlotsRef.current = null;
     pendingEventsRef.current = null;
+    pendingBookingRef.current = null;
+    setBookingProgress(null);
   }, []);
 
   const toggleVoice = useCallback(() => {
@@ -797,6 +958,10 @@ English only.`,
         )}
 
         <ChatWindow messages={messages} isLoading={isLoading} onSlotPick={handleSlotPick} />
+
+        {bookingProgress?.status === 'in_progress' && (
+          <BookingProgress progress={bookingProgress} />
+        )}
 
         <div className="chat-input-container">
           <input

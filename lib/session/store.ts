@@ -47,6 +47,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export function createInitialState(sessionId: string): ConversationState {
   return {
     sessionId,
+    bookingJob: null,
     slots: {
       duration: null,
       day: null,
