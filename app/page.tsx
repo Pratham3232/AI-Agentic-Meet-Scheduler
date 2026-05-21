@@ -79,12 +79,15 @@ export default function Home() {
   const pendingSlotsRef        = useRef<SlotOption[] | null>(null);
   const pendingEventsRef       = useRef<EventItem[] | null>(null);
   const pendingBookingRef      = useRef<BookingProgressSnapshot | null>(null);
+  const bookingRunActiveRef    = useRef(false);
 
   const timezone = typeof window !== 'undefined'
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
     : 'UTC';
 
   const runBookingJob = useCallback(async (sid: string) => {
+    if (bookingRunActiveRef.current) return;
+    bookingRunActiveRef.current = true;
     try {
       const res = await fetch('/api/booking/run', {
         method: 'POST',
@@ -145,6 +148,8 @@ export default function Home() {
       }
     } catch (err) {
       console.error('[BookingRun]', err);
+    } finally {
+      bookingRunActiveRef.current = false;
     }
   }, []);
 
@@ -178,8 +183,6 @@ export default function Home() {
       }
       if (data.startBookingRun && sid) {
         await runBookingJob(sid);
-      } else if (data.bookingJob?.status === 'in_progress' && data.bookingJob.pending > 0) {
-        await runBookingJob(sid!);
       }
     } catch (err) {
       setMessages(prev => [...prev, {
@@ -220,7 +223,7 @@ export default function Home() {
         pendingBookingRef.current = data.result.progress;
         setBookingProgress(data.result.progress);
         if (data.result.startBookingRun && data.sessionId) {
-          runBookingJob(data.sessionId);
+          void runBookingJob(data.sessionId);
         }
       } else if (toolName === 'create_event' && data.result?.success === false) {
         setMessages(prev => [...prev, {

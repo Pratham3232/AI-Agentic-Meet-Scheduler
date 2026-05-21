@@ -9,6 +9,11 @@ const debug = () => new DebugLogger();
 const blank: ConversationState = {
   sessionId: 'test',
   bookingJob: null,
+  bookingPlanConfirmed: false,
+  confirmedPlanSummary: null,
+  cachedCalendar: null,
+  calendarVersion: 0,
+  pendingReschedule: null,
   slots: {
     duration: null,
     day: null,

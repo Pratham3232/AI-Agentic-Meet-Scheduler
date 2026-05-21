@@ -1,9 +1,22 @@
 import { parseISO } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
-import type { CalendarEvent } from '@/types';
+import type { CalendarEvent, ConversationState } from '@/types';
 import { formatTimeSlot } from '@/lib/calendar/utils';
-import { createEvent, deleteEvent, listEvents } from '@/lib/calendar/events';
+import {
+  createEvent,
+  deleteEvent,
+  getEventById,
+  listEvents,
+} from '@/lib/calendar/events';
 import { isSlotFree } from '@/lib/calendar/slot-search';
+import type { DebugLogger } from '@/lib/debug';
+import {
+  findCachedEventById,
+  getCachedEventsForRange,
+  invalidateEventCache,
+  setPendingReschedule,
+  updateEventCache,
+} from '@/lib/agent/event-cache';
 
 export interface TimeHintRange {
   startHour: number;
@@ -79,7 +92,6 @@ function applyImplicitMeridiem(
   }
   if (normalized.includes('am')) return { startHour, endHour };
 
-  // "4 to 7" / "4-7" → afternoon; "9 to 11" → morning
   if (startHour < 8 && endHour <= 8) {
     return {
       startHour: startHour < 12 ? startHour + 12 : startHour,
@@ -89,7 +101,6 @@ function applyImplicitMeridiem(
   return { startHour, endHour };
 }
 
-/** Parse phrases like "4 to 7", "4-7pm", "4:00–7:00" into local hour range. */
 export function parseTimeHint(hint: string): TimeHintRange | null {
   const normalized = hint
     .trim()
@@ -242,10 +253,58 @@ export async function runIdentifyEvent(
   timeMin: string,
   timeMax: string,
   criteria: IdentifyCriteria,
-  timezone: string
-): Promise<IdentifyEventsResult> {
-  const events = await listEvents(timeMin, timeMax);
-  return identifyEvents(events, { ...criteria, timezone }, timezone);
+  timezone: string,
+  state?: ConversationState,
+  debug?: DebugLogger
+): Promise<{ result: IdentifyEventsResult; stateUpdates: Partial<ConversationState> }> {
+  let events: CalendarEvent[];
+  const cached = state ? getCachedEventsForRange(state, timeMin, timeMax) : null;
+
+  if (cached?.length) {
+    events = cached.map(row => ({
+      id: row.id,
+      summary: row.summary,
+      start: { dateTime: row.start },
+      end: { dateTime: row.end },
+    })) as CalendarEvent[];
+  } else {
+    events = await listEvents(timeMin, timeMax, undefined, debug, 50);
+  }
+
+  const result = identifyEvents(events, { ...criteria, timezone }, timezone);
+
+  debug?.log({
+    type: 'reschedule_identify',
+    eventsListed: result.eventsListed,
+    bestMatchId: result.bestMatch?.id,
+    ambiguous: result.ambiguous,
+  });
+
+  const stateUpdates: Partial<ConversationState> = {};
+  if (state) {
+    let next = updateEventCache(state, timeMin, timeMax, events, timezone);
+    if (result.bestMatch && !result.ambiguous) {
+      const day =
+        criteria.day ??
+        formatInTimeZone(parseISO(result.bestMatch.start), timezone, 'yyyy-MM-dd');
+      next = setPendingReschedule(next, {
+        eventId: result.bestMatch.id,
+        summary: result.bestMatch.summary,
+        oldStart: result.bestMatch.start,
+        oldEnd: result.bestMatch.end,
+        oldDisplay: result.bestMatch.display,
+        day,
+      });
+    } else {
+      next = setPendingReschedule(next, null);
+    }
+    Object.assign(stateUpdates, {
+      cachedCalendar: next.cachedCalendar,
+      pendingReschedule: next.pendingReschedule,
+    });
+  }
+
+  return { result, stateUpdates };
 }
 
 export async function runRescheduleEvent(
@@ -253,18 +312,51 @@ export async function runRescheduleEvent(
   newStartTime: string,
   newEndTime: string,
   confirmed: boolean,
-  timezone: string
-): Promise<RescheduleResult> {
-  const events = await listEvents(
-    new Date(Date.now() - 90 * 86400000).toISOString(),
-    new Date(Date.now() + 365 * 86400000).toISOString()
-  );
-  const existing = events.find(e => e.id === eventId);
+  timezone: string,
+  state?: ConversationState,
+  debug?: DebugLogger
+): Promise<{ result: RescheduleResult; stateUpdates: Partial<ConversationState> }> {
+  let existing: CalendarEvent | null = null;
+
+  const cached = state ? findCachedEventById(state, eventId) : undefined;
+  if (cached) {
+    existing = {
+      id: cached.id,
+      summary: cached.summary,
+      start: { dateTime: cached.start },
+      end: { dateTime: cached.end },
+    } as CalendarEvent;
+  }
+
+  if (!existing && state?.pendingReschedule?.eventId === eventId) {
+    const p = state.pendingReschedule;
+    existing = {
+      id: p.eventId,
+      summary: p.summary,
+      start: { dateTime: p.oldStart },
+      end: { dateTime: p.oldEnd },
+    } as CalendarEvent;
+  }
+
+  if (!existing) {
+    existing = await getEventById(eventId);
+  }
+
   if (!existing?.start?.dateTime || !existing.end?.dateTime) {
-    return {
+    debug?.log({
+      type: 'reschedule_execute',
+      eventId,
+      confirmed,
       success: false,
-      error: 'Event not found. Call identify_event again.',
-      hint: 'Use list_events + identify_event for the correct day.',
+      error: 'Event not found',
+    });
+    return {
+      result: {
+        success: false,
+        error: 'Event not found. Call identify_event for that day again.',
+        hint: 'Use the eventId from identify_event or the cached calendar block.',
+      },
+      stateUpdates: {},
     };
   }
 
@@ -281,36 +373,92 @@ export async function runRescheduleEvent(
     const free = await isSlotFree(newStartTime, newEndTime);
     if (!free) {
       return {
-        success: false,
-        error: 'The new time conflicts with another event.',
-        hint: 'Call find_free_slots for alternatives, then reschedule_event again.',
+        result: {
+          success: false,
+          error: 'The new time conflicts with another event.',
+          hint: 'Call find_free_slots for alternatives, then reschedule_event again.',
+        },
+        stateUpdates: state
+          ? {
+              pendingReschedule: {
+                eventId,
+                summary: existing.summary ?? 'Meeting',
+                oldStart: existing.start.dateTime,
+                oldEnd: existing.end.dateTime,
+                oldDisplay,
+                day: formatInTimeZone(parseISO(existing.start.dateTime), timezone, 'yyyy-MM-dd'),
+                newStartTime,
+                newEndTime,
+                newDisplay,
+              },
+            }
+          : {},
       };
     }
+    const stateUpdates: Partial<ConversationState> = state
+      ? {
+          pendingReschedule: {
+            eventId,
+            summary: existing.summary ?? 'Meeting',
+            oldStart: existing.start.dateTime,
+            oldEnd: existing.end.dateTime,
+            oldDisplay,
+            day: formatInTimeZone(parseISO(existing.start.dateTime), timezone, 'yyyy-MM-dd'),
+            newStartTime,
+            newEndTime,
+            newDisplay,
+          },
+          awaitingConfirmation: true,
+        }
+      : {};
     return {
-      eventId,
-      oldDisplay,
-      newDisplay,
-      newStartTime,
-      newEndTime,
-      needsConfirmation: true,
+      result: {
+        eventId,
+        oldDisplay,
+        newDisplay,
+        newStartTime,
+        newEndTime,
+        needsConfirmation: true,
+      },
+      stateUpdates,
     };
   }
 
   const free = await isSlotFree(newStartTime, newEndTime);
   if (!free) {
-    return {
+    debug?.log({
+      type: 'reschedule_execute',
+      eventId,
+      confirmed,
       success: false,
-      error: 'The new time is no longer available.',
-      hint: 'Call find_free_slots and try again.',
+      error: 'Slot busy',
+    });
+    return {
+      result: {
+        success: false,
+        error: 'The new time is no longer available.',
+        hint: 'Call find_free_slots and try again.',
+      },
+      stateUpdates: {},
     };
   }
 
   try {
     await deleteEvent(eventId);
   } catch {
-    return {
+    debug?.log({
+      type: 'reschedule_execute',
+      eventId,
+      confirmed,
       success: false,
-      error: 'Could not delete the original event (may already be removed).',
+      error: 'Delete failed',
+    });
+    return {
+      result: {
+        success: false,
+        error: 'Could not delete the original event (may already be removed).',
+      },
+      stateUpdates: {},
     };
   }
 
@@ -321,5 +469,27 @@ export async function runRescheduleEvent(
     timezone
   );
 
-  return { success: true, display, eventId: created.id };
+  debug?.log({
+    type: 'reschedule_execute',
+    eventId,
+    confirmed,
+    success: true,
+  });
+
+  const stateUpdates: Partial<ConversationState> = state
+    ? (() => {
+        const next = invalidateEventCache(state);
+        return {
+          cachedCalendar: next.cachedCalendar,
+          calendarVersion: next.calendarVersion,
+          pendingReschedule: next.pendingReschedule,
+          awaitingConfirmation: false,
+        };
+      })()
+    : { awaitingConfirmation: false };
+
+  return {
+    result: { success: true, display, eventId: created.id },
+    stateUpdates,
+  };
 }

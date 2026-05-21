@@ -2,24 +2,36 @@ import {
   initBookingJob,
   executeBookingBatch,
   getBookingProgress,
+  type InitBookingJobResult,
+  type BookingJobEntryInput,
 } from '@/lib/agent/booking-executor';
-import { createEvent } from '@/lib/calendar/events';
+
+function mustInit(entries: BookingJobEntryInput[]): InitBookingJobResult {
+  const r = initBookingJob(entries);
+  if ('error' in r) throw new Error(r.message);
+  return r;
+}
+import { createEvent, listEvents } from '@/lib/calendar/events';
 import { isSlotFree } from '@/lib/calendar/slot-search';
 
 jest.mock('@/lib/calendar/events', () => ({
   createEvent: jest.fn(),
+  listEvents: jest.fn(),
 }));
 
 jest.mock('@/lib/calendar/slot-search', () => ({
   isSlotFree: jest.fn(),
+  eventsOverlappingRange: jest.requireActual('@/lib/calendar/slot-search').eventsOverlappingRange,
 }));
 
 const mockedCreate = createEvent as jest.MockedFunction<typeof createEvent>;
+const mockedList = listEvents as jest.MockedFunction<typeof listEvents>;
 const mockedFree = isSlotFree as jest.MockedFunction<typeof isSlotFree>;
 
 describe('booking-executor', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockedList.mockResolvedValue([]);
     mockedFree.mockResolvedValue(true);
     mockedCreate.mockImplementation(async (summary, start, end) => ({
       id: `evt-${start}`,
@@ -30,17 +42,17 @@ describe('booking-executor', () => {
   });
 
   test('initBookingJob creates pending items', () => {
-    const { job, total } = initBookingJob([
+    const { job, total } = mustInit([
       { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
       { day: '2026-05-21', start: '2026-05-21T14:00:00Z', end: '2026-05-21T15:00:00Z', summary: 'B' },
     ]);
     expect(total).toBe(2);
     expect(job.status).toBe('in_progress');
-    expect(job.items.every(i => i.status === 'pending')).toBe(true);
+    expect(job.items.every((i: { status: string }) => i.status === 'pending')).toBe(true);
   });
 
   test('executeBookingBatch books up to batchSize items', async () => {
-    const { job } = initBookingJob([
+    const { job } = mustInit([
       { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
       { day: '2026-05-21', start: '2026-05-21T14:00:00Z', end: '2026-05-21T15:00:00Z', summary: 'B' },
       { day: '2026-05-22', start: '2026-05-22T14:00:00Z', end: '2026-05-22T15:00:00Z', summary: 'C' },
@@ -55,7 +67,7 @@ describe('booking-executor', () => {
 
   test('marks item failed when slot not free', async () => {
     mockedFree.mockResolvedValueOnce(false);
-    const { job } = initBookingJob([
+    const { job } = mustInit([
       { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
     ]);
     const result = await executeBookingBatch(job, 5);
@@ -64,8 +76,42 @@ describe('booking-executor', () => {
     expect(mockedCreate).not.toHaveBeenCalled();
   });
 
+  test('reconciles existing calendar event instead of failing', async () => {
+    mockedFree.mockResolvedValue(false);
+    mockedList.mockResolvedValue([
+      {
+        id: 'existing-1',
+        summary: 'Break',
+        start: { dateTime: '2026-05-20T14:00:00Z' },
+        end: { dateTime: '2026-05-20T15:00:00Z' },
+      },
+    ] as any);
+
+    const { job } = mustInit([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'Break' },
+    ]);
+    const result = await executeBookingBatch(job, 5);
+    expect(result.reconciledThisBatch).toBe(1);
+    expect(result.job.items[0].status).toBe('booked');
+    expect(result.job.items[0].eventId).toBe('existing-1');
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  test('blocks duplicate init for same fingerprint', () => {
+    const first = initBookingJob([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
+    ]);
+    if ('error' in first) throw new Error('expected success');
+    const second = initBookingJob(
+      [{ day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' }],
+      'UTC',
+      first.job
+    );
+    expect('error' in second).toBe(true);
+  });
+
   test('getBookingProgress percent reflects finished items', async () => {
-    const { job } = initBookingJob([
+    const { job } = mustInit([
       { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
       { day: '2026-05-21', start: '2026-05-21T14:00:00Z', end: '2026-05-21T15:00:00Z', summary: 'B' },
     ]);

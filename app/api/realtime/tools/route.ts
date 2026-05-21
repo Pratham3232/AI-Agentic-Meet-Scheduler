@@ -11,6 +11,7 @@ import { getTimeWindowBounds, formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
 import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
+import { invalidateEventCache, updateEventCache } from '@/lib/agent/event-cache';
 import { isSlotFree, filterFutureSlots } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { v4 as uuidv4 } from 'uuid';
@@ -138,9 +139,9 @@ export async function POST(req: NextRequest) {
       if (searchResult.requestedSlot) result.requestedSlot = searchResult.requestedSlot;
 
     } else if (toolName === 'plan_multi_day_bookings') {
-      const { durationMinutes, days, preferredTime } = args;
+      const { durationMinutes, days, preferredTime, dayPattern, userMessage } = args;
       const plan = await planMultiDayBookings(
-        { durationMinutes, days, preferredTime, timezone, workingHours },
+        { durationMinutes, days, preferredTime, timezone, workingHours, dayPattern, userMessage },
         debug,
         now
       );
@@ -148,24 +149,41 @@ export async function POST(req: NextRequest) {
         ...plan,
         hint:
           plan.conflicts.length === 0
-            ? 'All days available. Ask ONE confirmation, then init_booking_job with all autoBookable entries, then execute_booking_batch once. Never promise to notify later.'
-            : 'Show ONLY conflict days. Do not list autoBookable days. After user picks, init_booking_job then execute_booking_batch.',
+            ? 'Use days[] and displayList[] from this result. ONE confirmation, then init_booking_job.'
+            : 'Show ONLY conflict days. After user picks, init_booking_job once.',
       };
       state.awaitingConfirmation = true;
 
     } else if (toolName === 'init_booking_job') {
-      const { entries } = args;
-      const { job, jobId, total, hint } = initBookingJob(entries ?? [], timezone);
-      state.bookingJob = job;
-      state.awaitingConfirmation = false;
-      const progress = getBookingProgress(job);
-      result = {
-        jobId,
-        total,
-        progress,
-        hint,
-        startBookingRun: progress.pending > 0,
-      };
+      const { entries, force } = args;
+      const initResult = initBookingJob(entries ?? [], timezone, state.bookingJob, force);
+      if ('error' in initResult) {
+        result = {
+          error: initResult.error,
+          message: initResult.message,
+          progress: initResult.progress,
+        };
+      } else {
+        const { job, jobId, total, hint } = initResult;
+        state.bookingJob = job;
+        state.awaitingConfirmation = false;
+        state.bookingPlanConfirmed = true;
+        state.confirmedPlanSummary = `${total} meeting(s)`;
+        const progress = getBookingProgress(job);
+        debug.log({
+          type: 'booking_job_init',
+          jobId,
+          total,
+          days: (entries ?? []).map((e: { day: string }) => e.day),
+        });
+        result = {
+          jobId,
+          total,
+          progress,
+          hint,
+          startBookingRun: progress.pending > 0,
+        };
+      }
 
     } else if (toolName === 'execute_booking_batch') {
       if (!state.bookingJob) {
@@ -174,7 +192,7 @@ export async function POST(req: NextRequest) {
         };
       } else {
         const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;
-        const batchResult = await executeBookingBatch(state.bookingJob, batchSize);
+        const batchResult = await executeBookingBatch(state.bookingJob, batchSize, debug);
         state.bookingJob = batchResult.job;
         result = {
           progress: batchResult.progress,
@@ -182,28 +200,36 @@ export async function POST(req: NextRequest) {
           failedThisBatch: batchResult.failedThisBatch,
           done: batchResult.done,
           hint: batchResult.hint,
-          startBookingRun: batchResult.progress.pending > 0,
+          startBookingRun: !batchResult.done && batchResult.progress.pending > 0,
         };
       }
 
     } else if (toolName === 'identify_event') {
       const { timeMin, timeMax, timeHint, summaryHint, day } = args;
-      result = await runIdentifyEvent(
+      const identified = await runIdentifyEvent(
         timeMin,
         timeMax,
         { timeHint, summaryHint, day },
-        timezone
+        timezone,
+        state,
+        debug
       );
+      result = identified.result;
+      Object.assign(state, identified.stateUpdates);
 
     } else if (toolName === 'reschedule_event') {
       const { eventId, newStartTime, newEndTime, confirmed } = args;
-      result = await runRescheduleEvent(
+      const rescheduled = await runRescheduleEvent(
         eventId,
         newStartTime,
         newEndTime,
         confirmed,
-        timezone
+        timezone,
+        state,
+        debug
       );
+      result = rescheduled.result;
+      Object.assign(state, rescheduled.stateUpdates);
 
     } else if (toolName === 'create_event') {
       const { summary, startTime, endTime, attendees = [], description } = args;
@@ -226,6 +252,10 @@ export async function POST(req: NextRequest) {
           };
         } else {
           const event = await createEvent(summary, startTime, endTime, attendees, description);
+          const invalidated = invalidateEventCache(state);
+          state.cachedCalendar = invalidated.cachedCalendar;
+          state.calendarVersion = invalidated.calendarVersion;
+          state.pendingReschedule = invalidated.pendingReschedule;
           state.awaitingConfirmation = false;
           state.calendarResults = [];
           state.lastSearchParams = null;
@@ -242,7 +272,9 @@ export async function POST(req: NextRequest) {
 
     } else if (toolName === 'list_events') {
       const { timeMin, timeMax } = args;
-      const events = await listEvents(timeMin, timeMax, undefined, debug);
+      const events = await listEvents(timeMin, timeMax, undefined, debug, 50);
+      const cached = updateEventCache(state, timeMin, timeMax, events, timezone);
+      state.cachedCalendar = cached.cachedCalendar;
       result = {
         count: events.length,
         events: events.map(e => ({
@@ -267,6 +299,10 @@ export async function POST(req: NextRequest) {
       const { eventId } = args;
       try {
         await deleteEvent(eventId);
+        const invalidated = invalidateEventCache(state);
+        state.cachedCalendar = invalidated.cachedCalendar;
+        state.calendarVersion = invalidated.calendarVersion;
+        state.pendingReschedule = invalidated.pendingReschedule;
         result = { success: true, deletedEventId: eventId };
       } catch {
         result = { success: false, error: 'Event not found or already deleted.' };

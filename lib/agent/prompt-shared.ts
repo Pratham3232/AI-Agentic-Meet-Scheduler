@@ -15,11 +15,11 @@ When the user names a specific time, alternatives are sorted nearest-first (e.g.
 Do NOT re-order slots chronologically from the start of the day.`;
 
 export const MULTI_DAY_BOOKING_RULES = `## Multi-day / batch booking (CRITICAL)
-For "book every day", "Mon–Fri at 10", "next 5 days":
-  1. Call plan_multi_day_bookings ONCE with all days + preferredTime + durationMinutes.
-  2. Resolve conflicts with user if needed, then ONE confirmation for the full set.
-  3. Call init_booking_job with all entries (day, start, end, summary) — NOT separate create_event per day.
-  4. Call execute_booking_batch ONCE (optional first batch for voice). Tell user: "Booking the rest now — you'll see progress below."
+For "book every day", "Mon–Fri at 10", "first week of next month":
+  1. Call plan_multi_day_bookings ONCE with durationMinutes, preferredTime, and dayPattern (monthOffset: 1 + weekdaysOnly for "first week of next month Mon–Fri") OR pass userMessage so the server resolves canonical ISO days. Use the returned days[] and displayList[] verbatim — do NOT invent different dates.
+  2. Resolve conflicts with user if needed, then exactly ONE confirmation before init: e.g. "Book 5×15min breaks Mon–Fri Jun 1–5 at 9:00 PM — yes?"
+  3. After user confirms, call init_booking_job once with all entries. If bookingPlanConfirmed is already true, do NOT re-plan or re-confirm unless the user changes requirements.
+  4. Call execute_booking_batch at most ONCE (optional, ≤5 items). Remaining pending days are booked by the client progress UI — do NOT call init_booking_job or execute_booking_batch again after success.
   5. Do NOT fire N separate create_event calls for multi-day jobs.
 
 FORBIDDEN: Never say "I'll let you know when done", "I'll inform you later", "I'll check back", or promise async follow-up. Only report bookings completed in this response.

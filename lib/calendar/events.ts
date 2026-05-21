@@ -42,15 +42,31 @@ export async function createEvent(
   }
 }
 
+export async function getEventById(
+  eventId: string,
+  calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'
+): Promise<CalendarEvent | null> {
+  const t0 = Date.now();
+  try {
+    const calendar = await getCalendarClient();
+    const response = await calendar.events.get({ calendarId, eventId });
+    console.log(`[PERF][calendar] getEventById: ${Date.now() - t0}ms`);
+    return response.data as CalendarEvent;
+  } catch {
+    console.log(`[PERF][calendar] getEventById (not found): ${Date.now() - t0}ms`);
+    return null;
+  }
+}
+
 /**
  * List all events between two UTC ISO datetimes.
- * Used to answer "what's on my calendar tomorrow?" queries.
  */
 export async function listEvents(
   timeMin: string,
   timeMax: string,
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary',
-  debug?: DebugLogger
+  debug?: DebugLogger,
+  maxResults: number = 50
 ): Promise<CalendarEvent[]> {
   const t0 = Date.now();
   const calendar = await getCalendarClient();
@@ -61,12 +77,12 @@ export async function listEvents(
     timeMax,
     singleEvents: true,
     orderBy: 'startTime',
-    maxResults: 20,
+    maxResults,
   });
 
   const items = (response.data.items || []) as CalendarEvent[];
   debug?.log({ type: 'tool_result', tool: 'list_events', summary: `${items.length} event(s) found` });
-  console.log(`[PERF][calendar] listEvents: ${Date.now() - t0}ms`);
+  console.log(`[PERF][calendar] listEvents: ${Date.now() - t0}ms (${items.length})`);
   return items;
 }
 

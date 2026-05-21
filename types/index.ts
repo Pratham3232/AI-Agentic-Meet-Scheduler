@@ -29,6 +29,8 @@ export interface BookingJob {
   status: BookingJobStatus;
   items: BookingJobItem[];
   updatedAt: string;
+  sseInProgress?: boolean;
+  entriesFingerprint?: string;
 }
 
 export interface BookingProgressSnapshot {
@@ -43,9 +45,39 @@ export interface BookingProgressSnapshot {
   items: BookingJobItem[];
 }
 
+export interface CachedCalendarSnapshot {
+  timeMin: string;
+  timeMax: string;
+  fetchedAt: string;
+  events: Array<{
+    id: string;
+    summary: string;
+    start: string;
+    end: string;
+    display: string;
+  }>;
+}
+
+export interface PendingReschedule {
+  eventId: string;
+  summary: string;
+  oldStart: string;
+  oldEnd: string;
+  oldDisplay: string;
+  day: string;
+  newStartTime?: string;
+  newEndTime?: string;
+  newDisplay?: string;
+}
+
 export interface ConversationState {
   sessionId: string;
   bookingJob: BookingJob | null;
+  bookingPlanConfirmed: boolean;
+  confirmedPlanSummary: string | null;
+  cachedCalendar: CachedCalendarSnapshot | null;
+  calendarVersion: number;
+  pendingReschedule: PendingReschedule | null;
   slots: {
     duration: number | null;       // minutes
     day: string | null;            // ISO date string

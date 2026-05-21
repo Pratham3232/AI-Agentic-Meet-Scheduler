@@ -1,8 +1,9 @@
 import { NextRequest } from 'next/server';
 import { getSession, saveSession } from '@/lib/session/store';
-import { runBookingJobToCompletion } from '@/lib/agent/booking-executor';
+import { getBookingProgress, runBookingJobToCompletion } from '@/lib/agent/booking-executor';
 import { withCalendarAuth } from '@/lib/calendar/auth';
 import { resolveCalendarAuth } from '@/lib/auth/resolve';
+import { DebugLogger } from '@/lib/debug';
 
 export const maxDuration = 60;
 
@@ -23,6 +24,8 @@ export async function POST(req: NextRequest) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
       };
 
+      const debug = new DebugLogger();
+
       try {
         await runWithAuth(async () => {
           const state = await getSession(sessionId);
@@ -32,18 +35,31 @@ export async function POST(req: NextRequest) {
             return;
           }
 
-          const { job, progress } = await runBookingJobToCompletion(
+          const progress0 = getBookingProgress(state.bookingJob);
+          if (progress0.pending === 0 || state.bookingJob.status === 'completed') {
+            send({ type: 'complete', ...progress0 });
+            controller.close();
+            return;
+          }
+
+          const { job, progress, blocked } = await runBookingJobToCompletion(
             state.bookingJob,
             batchSize,
             p => {
               send({ type: 'progress', ...p });
-            }
+            },
+            debug,
+            sessionId
           );
 
           state.bookingJob = job;
           await saveSession(state);
 
-          send({ type: 'complete', ...progress });
+          send({
+            type: 'complete',
+            ...progress,
+            duplicateBlocked: blocked ?? false,
+          });
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

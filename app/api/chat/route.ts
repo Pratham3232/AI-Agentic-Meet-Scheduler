@@ -19,6 +19,7 @@ import {
   getBookingProgress,
 } from '@/lib/agent/booking-executor';
 import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
+import { invalidateEventCache, updateEventCache } from '@/lib/agent/event-cache';
 import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
@@ -121,14 +122,16 @@ async function executeTool(
 
   // ── plan_multi_day_bookings ───────────────────────────────────────────────
   if (toolName === 'plan_multi_day_bookings') {
-    const { durationMinutes, days, preferredTime } = args as {
+    const { durationMinutes, days, preferredTime, dayPattern, userMessage } = args as {
       durationMinutes: number;
       days: string[];
       preferredTime: string;
+      dayPattern?: { monthOffset?: number; weekdaysOnly?: boolean };
+      userMessage?: string;
     };
 
     const plan = await planMultiDayBookings(
-      { durationMinutes, days, preferredTime, timezone, workingHours },
+      { durationMinutes, days, preferredTime, timezone, workingHours, dayPattern, userMessage },
       debug
     );
 
@@ -136,8 +139,8 @@ async function executeTool(
       ...plan,
       hint:
         plan.conflicts.length === 0
-          ? 'All days available. Ask ONE confirmation, then init_booking_job with all autoBookable entries, then execute_booking_batch once. Do NOT say you will notify later.'
-          : 'Show ONLY conflict days (one alternative each). Do not list autoBookable days. After user picks, init_booking_job then execute_booking_batch.',
+          ? `All ${plan.days.length} day(s) available. Use days[] and displayList[] exactly. Ask ONE confirmation, then init_booking_job. Do NOT re-plan after confirm.`
+          : 'Show ONLY conflict days (one alternative each). After user picks, init_booking_job once.',
     };
 
     console.log(`[PERF][chat] executeTool plan_multi_day_bookings: ${Date.now() - tExec}ms`);
@@ -146,12 +149,49 @@ async function executeTool(
 
   // ── init_booking_job ──────────────────────────────────────────────────────
   if (toolName === 'init_booking_job') {
-    const { entries } = args as {
+    const { entries, force } = args as {
       entries: Array<{ day: string; start: string; end: string; summary: string }>;
+      force?: boolean;
     };
 
-    const { job, jobId, total, hint } = initBookingJob(entries ?? [], timezone);
+    const initResult = initBookingJob(
+      entries ?? [],
+      timezone,
+      state.bookingJob,
+      force
+    );
+
+    if ('error' in initResult) {
+      debug.log({
+        type: 'booking_job_init',
+        jobId: state.bookingJob?.id ?? 'blocked',
+        total: entries?.length ?? 0,
+        days: (entries ?? []).map(e => e.day),
+        blocked: true,
+        reason: initResult.message,
+      });
+      console.log(`[PERF][chat] executeTool init_booking_job (blocked): ${Date.now() - tExec}ms`);
+      return {
+        toolResult: {
+          error: initResult.error,
+          message: initResult.message,
+          progress: initResult.progress,
+          hint: 'Booking already completed. Do not re-initialize.',
+        },
+        stateUpdates: {},
+      };
+    }
+
+    const { job, jobId, total, hint } = initResult;
     const progress = getBookingProgress(job);
+    const planSummary = `${total} meeting(s) — ${(entries ?? []).map(e => e.day).join(', ')}`;
+
+    debug.log({
+      type: 'booking_job_init',
+      jobId,
+      total,
+      days: (entries ?? []).map(e => e.day),
+    });
 
     console.log(`[PERF][chat] executeTool init_booking_job: ${Date.now() - tExec}ms`);
     return {
@@ -162,7 +202,12 @@ async function executeTool(
         hint,
         startBookingRun: progress.pending > 0,
       },
-      stateUpdates: { bookingJob: job, awaitingConfirmation: false },
+      stateUpdates: {
+        bookingJob: job,
+        awaitingConfirmation: false,
+        bookingPlanConfirmed: true,
+        confirmedPlanSummary: planSummary,
+      },
     };
   }
 
@@ -179,7 +224,7 @@ async function executeTool(
     }
 
     const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;
-    const result = await executeBookingBatch(state.bookingJob, batchSize);
+    const result = await executeBookingBatch(state.bookingJob, batchSize, debug);
 
     console.log(`[PERF][chat] executeTool execute_booking_batch: ${Date.now() - tExec}ms`);
     return {
@@ -187,9 +232,10 @@ async function executeTool(
         progress: result.progress,
         bookedThisBatch: result.bookedThisBatch,
         failedThisBatch: result.failedThisBatch,
+        reconciledThisBatch: result.reconciledThisBatch,
         done: result.done,
         hint: result.hint,
-        startBookingRun: result.progress.pending > 0,
+        startBookingRun: !result.done && result.progress.pending > 0,
       },
       stateUpdates: { bookingJob: result.job },
     };
@@ -204,9 +250,16 @@ async function executeTool(
       summaryHint?: string;
       day?: string;
     };
-    const result = await runIdentifyEvent(timeMin, timeMax, { timeHint, summaryHint, day }, timezone);
+    const { result, stateUpdates } = await runIdentifyEvent(
+      timeMin,
+      timeMax,
+      { timeHint, summaryHint, day },
+      timezone,
+      state,
+      debug
+    );
     console.log(`[PERF][chat] executeTool identify_event: ${Date.now() - tExec}ms`);
-    return { toolResult: result, stateUpdates: {} };
+    return { toolResult: result, stateUpdates };
   }
 
   // ── reschedule_event ──────────────────────────────────────────────────────
@@ -217,20 +270,17 @@ async function executeTool(
       newEndTime: string;
       confirmed: boolean;
     };
-    const result = await runRescheduleEvent(
+    const { result, stateUpdates } = await runRescheduleEvent(
       eventId,
       newStartTime,
       newEndTime,
       confirmed,
-      timezone
+      timezone,
+      state,
+      debug
     );
     console.log(`[PERF][chat] executeTool reschedule_event: ${Date.now() - tExec}ms`);
-    return {
-      toolResult: result,
-      stateUpdates: confirmed && 'success' in result && result.success
-        ? { awaitingConfirmation: false }
-        : {},
-    };
+    return { toolResult: result, stateUpdates };
   }
 
   // ── create_event ──────────────────────────────────────────────────────────
@@ -260,6 +310,7 @@ async function executeTool(
     debug.log({ type: 'tool_result', tool: 'create_event', summary: `created eventId=${event.id}` });
 
     console.log(`[PERF][chat] executeTool create_event: ${Date.now() - tExec}ms`);
+    const invalidated = invalidateEventCache(state);
     return {
       toolResult: {
         success: true,
@@ -272,6 +323,9 @@ async function executeTool(
         awaitingConfirmation: false,
         calendarResults: [],
         lastSearchParams: null,
+        cachedCalendar: invalidated.cachedCalendar,
+        calendarVersion: invalidated.calendarVersion,
+        pendingReschedule: invalidated.pendingReschedule,
       },
     };
   }
@@ -301,8 +355,15 @@ async function executeTool(
       })),
     };
 
+    const cached = updateEventCache(state, timeMin, timeMax, events, timezone);
     console.log(`[PERF][chat] executeTool list_events: ${Date.now() - tExec}ms`);
-    return { toolResult, stateUpdates: {} };
+    return {
+      toolResult,
+      stateUpdates: {
+        cachedCalendar: cached.cachedCalendar,
+        calendarVersion: state.calendarVersion,
+      },
+    };
   }
 
   // ── lookup_event ──────────────────────────────────────────────────────────
@@ -332,9 +393,14 @@ async function executeTool(
       await deleteEvent(eventId);
       debug.log({ type: 'tool_result', tool: 'delete_event', summary: `deleted ${eventId}` });
       console.log(`[PERF][chat] executeTool delete_event: ${Date.now() - tExec}ms`);
+      const invalidated = invalidateEventCache(state);
       return {
         toolResult: { success: true, deletedEventId: eventId },
-        stateUpdates: {},
+        stateUpdates: {
+          cachedCalendar: invalidated.cachedCalendar,
+          calendarVersion: invalidated.calendarVersion,
+          pendingReschedule: invalidated.pendingReschedule,
+        },
       };
     } catch {
       console.log(`[PERF][chat] executeTool delete_event (not found): ${Date.now() - tExec}ms`);
@@ -422,6 +488,7 @@ export async function POST(req: NextRequest) {
     let lastListedEvents: Array<{ id: string; summary: string; display: string }> | null = null;
     let bookingProgress: BookingProgressSnapshot | undefined;
     let startBookingRun = false;
+    let batchFinishedJob = false;
     const tLoop = Date.now();
 
     while (loopCount < MAX_TOOL_LOOPS) {
@@ -484,13 +551,14 @@ export async function POST(req: NextRequest) {
             id: e.id, summary: e.summary, display: e.display,
           }));
         }
-        if (toolName === 'init_booking_job' && toolResult.progress) {
+        if (toolName === 'init_booking_job' && toolResult.progress && !toolResult.error) {
           bookingProgress = toolResult.progress as BookingProgressSnapshot;
-          startBookingRun = (toolResult.progress as BookingProgressSnapshot).pending > 0;
+          startBookingRun = bookingProgress.pending > 0;
         }
         if (toolName === 'execute_booking_batch' && toolResult.progress) {
           bookingProgress = toolResult.progress as BookingProgressSnapshot;
-          if (toolResult.startBookingRun) startBookingRun = true;
+          batchFinishedJob = Boolean(toolResult.done);
+          startBookingRun = !batchFinishedJob && bookingProgress.pending > 0;
         }
         if (state.bookingJob && !bookingProgress) {
           bookingProgress = getBookingProgress(state.bookingJob);
@@ -537,12 +605,8 @@ export async function POST(req: NextRequest) {
 
     if (state.bookingJob) {
       bookingProgress = getBookingProgress(state.bookingJob);
-      if (
-        !startBookingRun &&
-        state.bookingJob.status === 'in_progress' &&
-        bookingProgress.pending > 0
-      ) {
-        startBookingRun = true;
+      if (batchFinishedJob || bookingProgress.pending === 0) {
+        startBookingRun = false;
       }
     }
 

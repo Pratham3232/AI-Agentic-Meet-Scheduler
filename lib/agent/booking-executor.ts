@@ -1,11 +1,14 @@
 import { v4 as uuidv4 } from 'uuid';
-import { createEvent } from '@/lib/calendar/events';
-import { isSlotFree } from '@/lib/calendar/slot-search';
+import { createEvent, listEvents } from '@/lib/calendar/events';
+import { isSlotFree, eventsOverlappingRange } from '@/lib/calendar/slot-search';
 import { formatTimeSlot } from '@/lib/calendar/utils';
+import { entriesFingerprint } from '@/lib/agent/booking-days';
+import type { DebugLogger } from '@/lib/debug';
 import type {
   BookingJob,
   BookingJobItem,
   BookingProgressSnapshot,
+  CalendarEvent,
 } from '@/types';
 
 export interface BookingJobEntryInput {
@@ -22,21 +25,97 @@ export interface InitBookingJobResult {
   hint: string;
 }
 
+export interface InitBookingJobBlocked {
+  error: 'job_already_done';
+  message: string;
+  progress: BookingProgressSnapshot;
+}
+
 export interface ExecuteBookingBatchResult {
   job: BookingJob;
   progress: BookingProgressSnapshot;
   bookedThisBatch: number;
   failedThisBatch: number;
+  reconciledThisBatch: number;
   done: boolean;
   hint: string;
 }
 
 const DEFAULT_BATCH_SIZE = 5;
 
+function sameSlot(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
+  return aStart === bStart && aEnd === bEnd;
+}
+
+function findMatchingEvent(
+  item: BookingJobItem,
+  calendarEvents: CalendarEvent[]
+): CalendarEvent | undefined {
+  const overlapping = eventsOverlappingRange(
+    calendarEvents,
+    item.start,
+    item.end
+  );
+  return overlapping.find(
+    e =>
+      e.start?.dateTime &&
+      e.end?.dateTime &&
+      (sameSlot(item.start, item.end, e.start.dateTime, e.end.dateTime) ||
+        (e.summary ?? '').toLowerCase() === item.summary.toLowerCase())
+  );
+}
+
+async function reconcilePendingItem(
+  item: BookingJobItem,
+  calendarEvents: CalendarEvent[]
+): Promise<{ item: BookingJobItem; action: 'already_booked' | 'pending' }> {
+  if (item.eventId) {
+    return {
+      item: { ...item, status: 'booked' },
+      action: 'already_booked',
+    };
+  }
+
+  const match = findMatchingEvent(item, calendarEvents);
+  if (match?.id && match.start?.dateTime && match.end?.dateTime) {
+    return {
+      item: {
+        ...item,
+        status: 'booked',
+        eventId: match.id,
+        error: undefined,
+      },
+      action: 'already_booked',
+    };
+  }
+
+  return { item, action: 'pending' };
+}
+
 export function initBookingJob(
   entries: BookingJobEntryInput[],
-  timezone: string = 'UTC'
-): InitBookingJobResult {
+  timezone: string = 'UTC',
+  existingJob?: BookingJob | null,
+  force?: boolean
+): InitBookingJobResult | InitBookingJobBlocked {
+  const fp = entriesFingerprint(entries);
+
+  if (existingJob && !force && existingJob.entriesFingerprint === fp) {
+    const progress = getBookingProgress(existingJob);
+    if (
+      existingJob.status === 'completed' ||
+      (progress.booked > 0 && progress.pending === 0) ||
+      existingJob.status === 'in_progress'
+    ) {
+      return {
+        error: 'job_already_done',
+        message:
+          'A booking job for these days already exists or finished. Do not re-initialize unless the user asks to start over (force: true).',
+        progress,
+      };
+    }
+  }
+
   const items: BookingJobItem[] = entries.map(e => ({
     day: e.day,
     start: e.start,
@@ -51,6 +130,8 @@ export function initBookingJob(
     status: items.length > 0 ? 'in_progress' : 'completed',
     items,
     updatedAt: new Date().toISOString(),
+    entriesFingerprint: fp,
+    sseInProgress: false,
   };
 
   return {
@@ -60,7 +141,7 @@ export function initBookingJob(
     hint:
       items.length === 0
         ? 'No entries to book.'
-        : 'Job initialized. Call execute_booking_batch once, then the client will auto-continue via /api/booking/run.',
+        : 'Job initialized. The client will book remaining days via progress UI. Do not call init_booking_job again.',
   };
 }
 
@@ -96,39 +177,106 @@ function finalizeJobStatus(job: BookingJob): BookingJob {
     ...job,
     status: hasFailed ? 'failed' : 'completed',
     updatedAt: new Date().toISOString(),
+    sseInProgress: false,
   };
 }
 
 export async function executeBookingBatch(
   job: BookingJob,
-  batchSize: number = DEFAULT_BATCH_SIZE
+  batchSize: number = DEFAULT_BATCH_SIZE,
+  debug?: DebugLogger
 ): Promise<ExecuteBookingBatchResult> {
-  if (job.status === 'completed' || job.status === 'failed') {
-    const progress = getBookingProgress(job);
+  const progress = getBookingProgress(job);
+  if (progress.pending === 0 || job.status === 'completed') {
     return {
-      job,
-      progress,
+      job: finalizeJobStatus(job),
+      progress: getBookingProgress(job),
       bookedThisBatch: 0,
       failedThisBatch: 0,
+      reconciledThisBatch: 0,
       done: true,
       hint: 'Booking job already finished.',
     };
   }
 
+  const pendingItems = job.items.filter(i => i.status === 'pending');
+  if (pendingItems.length === 0) {
+    const finalized = finalizeJobStatus(job);
+    return {
+      job: finalized,
+      progress: getBookingProgress(finalized),
+      bookedThisBatch: 0,
+      failedThisBatch: 0,
+      reconciledThisBatch: 0,
+      done: true,
+      hint: 'No pending items.',
+    };
+  }
+
+  const rangeStart = pendingItems.reduce(
+    (min, i) => (i.start < min ? i.start : min),
+    pendingItems[0].start
+  );
+  const rangeEnd = pendingItems.reduce(
+    (max, i) => (i.end > max ? i.end : max),
+    pendingItems[0].end
+  );
+  const calendarEvents = await listEvents(rangeStart, rangeEnd, undefined, debug, 50);
+
   const items = [...job.items];
   let bookedThisBatch = 0;
   let failedThisBatch = 0;
+  let reconciledThisBatch = 0;
   let processed = 0;
 
   for (let i = 0; i < items.length && processed < batchSize; i++) {
     if (items[i].status !== 'pending') continue;
 
-    const item = items[i];
+    let item = items[i];
     processed++;
+
+    const reconciled = await reconcilePendingItem(item, calendarEvents);
+    if (reconciled.action === 'already_booked') {
+      items[i] = reconciled.item;
+      reconciledThisBatch++;
+      bookedThisBatch++;
+      debug?.log({
+        type: 'booking_batch_item',
+        day: item.day,
+        action: 'reconciled_already_booked',
+        eventId: reconciled.item.eventId,
+      });
+      continue;
+    }
 
     try {
       const free = await isSlotFree(item.start, item.end);
+      debug?.log({
+        type: 'booking_batch_item',
+        day: item.day,
+        action: free ? 'create' : 'failed_busy',
+        isSlotFree: free,
+      });
+
       if (!free) {
+        const retry = findMatchingEvent(item, calendarEvents);
+        if (retry?.id) {
+          items[i] = {
+            ...item,
+            status: 'booked',
+            eventId: retry.id,
+          };
+          reconciledThisBatch++;
+          bookedThisBatch++;
+          debug?.log({
+            type: 'booking_batch_item',
+            day: item.day,
+            action: 'reconciled_after_busy',
+            eventId: retry.id,
+          });
+          continue;
+        }
+
         items[i] = {
           ...item,
           status: 'failed',
@@ -145,6 +293,12 @@ export async function executeBookingBatch(
         eventId: event.id,
       };
       bookedThisBatch++;
+      debug?.log({
+        type: 'booking_batch_item',
+        day: item.day,
+        action: 'booked',
+        eventId: event.id,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create event';
       items[i] = {
@@ -153,6 +307,12 @@ export async function executeBookingBatch(
         error: message,
       };
       failedThisBatch++;
+      debug?.log({
+        type: 'booking_batch_item',
+        day: item.day,
+        action: 'error',
+        error: message,
+      });
     }
   }
 
@@ -164,35 +324,76 @@ export async function executeBookingBatch(
   };
   updatedJob = finalizeJobStatus(updatedJob);
 
-  const progress = getBookingProgress(updatedJob);
-  const done = progress.pending === 0;
+  const finalProgress = getBookingProgress(updatedJob);
+  debug?.log({
+    type: 'booking_batch_done',
+    booked: finalProgress.booked,
+    failed: finalProgress.failed,
+    pending: finalProgress.pending,
+    done: finalProgress.pending === 0,
+  });
 
   return {
     job: updatedJob,
-    progress,
+    progress: finalProgress,
     bookedThisBatch,
     failedThisBatch,
-    done,
-    hint: done
-      ? 'All days processed.'
-      : 'More days pending — call execute_booking_batch again or use /api/booking/run for live progress.',
+    reconciledThisBatch,
+    done: finalProgress.pending === 0,
+    hint: finalProgress.pending === 0
+      ? 'All days processed. Do not call init_booking_job or execute_booking_batch again.'
+      : 'More days pending — client SSE will continue booking.',
   };
 }
 
 export async function runBookingJobToCompletion(
   job: BookingJob,
   batchSize: number = DEFAULT_BATCH_SIZE,
-  onBatch?: (progress: BookingProgressSnapshot) => void
-): Promise<{ job: BookingJob; progress: BookingProgressSnapshot }> {
-  let current = job;
+  onBatch?: (progress: BookingProgressSnapshot) => void,
+  debug?: DebugLogger,
+  sessionId?: string
+): Promise<{ job: BookingJob; progress: BookingProgressSnapshot; blocked?: boolean }> {
+  const progress0 = getBookingProgress(job);
+  if (progress0.pending === 0 || job.status === 'completed') {
+    const finalized = finalizeJobStatus(job);
+    return { job: finalized, progress: getBookingProgress(finalized) };
+  }
+
+  if (job.sseInProgress) {
+    debug?.log({
+      type: 'booking_sse_end',
+      sessionId: sessionId ?? '',
+      booked: progress0.booked,
+      failed: progress0.failed,
+      blocked: true,
+    });
+    return { job, progress: progress0, blocked: true };
+  }
+
+  debug?.log({
+    type: 'booking_sse_start',
+    sessionId: sessionId ?? '',
+    jobId: job.id,
+    pending: progress0.pending,
+  });
+
+  let current: BookingJob = { ...job, sseInProgress: true };
   let progress = getBookingProgress(current);
 
   while (progress.pending > 0) {
-    const result = await executeBookingBatch(current, batchSize);
+    const result = await executeBookingBatch(current, batchSize, debug);
     current = result.job;
     progress = result.progress;
     onBatch?.(progress);
   }
 
-  return { job: current, progress };
+  current = { ...finalizeJobStatus(current), sseInProgress: false };
+  const finalProgress = getBookingProgress(current);
+  debug?.log({
+    type: 'booking_sse_end',
+    sessionId: sessionId ?? '',
+    booked: finalProgress.booked,
+    failed: finalProgress.failed,
+  });
+  return { job: current, progress: finalProgress };
 }

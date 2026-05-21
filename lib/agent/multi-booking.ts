@@ -8,10 +8,19 @@ import {
 } from '@/lib/calendar/slot-search';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { listEvents } from '@/lib/calendar/events';
+import {
+  parseBookingDayRequest,
+  resolveFirstWeekOfMonth,
+  resolveWeekdaysInRange,
+  formatDayListForDisplay,
+  type BookingDayPattern,
+} from '@/lib/agent/booking-days';
 import { DebugLogger } from '@/lib/debug';
-import { TimeSlot, WorkingHours } from '@/types';
+import { WorkingHours } from '@/types';
 import { parseISO } from 'date-fns';
 import { fromZonedTime } from 'date-fns-tz';
+
+const MON_FRI = [1, 2, 3, 4, 5];
 
 export interface PlanMultiDayArgs {
   durationMinutes: number;
@@ -19,6 +28,32 @@ export interface PlanMultiDayArgs {
   preferredTime: string;
   timezone: string;
   workingHours?: WorkingHours;
+  dayPattern?: BookingDayPattern;
+  userMessage?: string;
+}
+
+export function resolvePlanDays(
+  days: string[],
+  timezone: string,
+  options?: { dayPattern?: BookingDayPattern; userMessage?: string },
+  now: Date = new Date()
+): string[] {
+  if (options?.userMessage) {
+    const parsed = parseBookingDayRequest(options.userMessage, timezone, now);
+    if (parsed?.length) return parsed;
+  }
+
+  const pattern = options?.dayPattern;
+  if (pattern?.monthOffset !== undefined) {
+    const week = resolveFirstWeekOfMonth(pattern.monthOffset, timezone, now);
+    if (pattern.weekdaysOnly || pattern.weekdayIndices?.length) {
+      const indices = pattern.weekdayIndices ?? MON_FRI;
+      return resolveWeekdaysInRange(week.startDay, week.endDay, indices, timezone);
+    }
+    return week.days;
+  }
+
+  return days;
 }
 
 export interface DayPlanEntry {
@@ -37,6 +72,9 @@ export interface PlanMultiDayResult {
   conflicts: DayPlanEntry[];
   summary: string;
   totalDays: number;
+  days: string[];
+  weekdayLabels: string[];
+  displayList: string[];
 }
 
 function parsePreferredHourMinute(preferredTime: string): { hour: number; minute: number } {
@@ -66,7 +104,11 @@ export async function planMultiDayBookings(
   debug: DebugLogger,
   now: Date = new Date()
 ): Promise<PlanMultiDayResult> {
-  const { durationMinutes, days, preferredTime, timezone, workingHours } = args;
+  const { durationMinutes, preferredTime, timezone, workingHours } = args;
+  const days = resolvePlanDays(args.days, timezone, {
+    dayPattern: args.dayPattern,
+    userMessage: args.userMessage,
+  }, now);
   const { hour, minute } = parsePreferredHourMinute(preferredTime);
   const startH = workingHours?.startHour ?? 9;
   const endH = workingHours?.endHour ?? 17;
@@ -142,10 +184,20 @@ export async function planMultiDayBookings(
       ? `All ${autoBookable.length} day(s) are available at ${preferredTime}. Confirm once to book all.`
       : `${autoBookable.length} of ${days.length} day(s) ready to book; ${conflicts.length} need your pick.`;
 
+  const weekdayLabels = formatDayListForDisplay(days, timezone);
+  const displayList = days.map((day, i) => {
+    const entry = autoBookable.find(e => e.day === day) ?? conflicts.find(e => e.day === day);
+    const timeLabel = entry?.display ?? entry?.requestedDisplay ?? preferredTime;
+    return `${weekdayLabels[i]} at ${timeLabel}`;
+  });
+
   return {
     autoBookable,
     conflicts,
     summary,
     totalDays: days.length,
+    days,
+    weekdayLabels,
+    displayList,
   };
 }

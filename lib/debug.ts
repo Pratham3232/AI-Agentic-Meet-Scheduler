@@ -8,7 +8,14 @@ export type DebugEntry =
   | { type: 'calendar_query'; startTime: string; endTime: string; duration: number; timezone: string }
   | { type: 'freebusy_result'; busyCount: number; freeCount: number; strategy: string }
   | { type: 'conflict_resolution'; step: number; strategy: string; slotsFound: number }
-  | { type: 'final_response'; textLength: number };
+  | { type: 'final_response'; textLength: number }
+  | { type: 'booking_job_init'; jobId: string; total: number; days: string[]; blocked?: boolean; reason?: string }
+  | { type: 'booking_batch_item'; day: string; action: string; isSlotFree?: boolean; eventId?: string; error?: string }
+  | { type: 'booking_batch_done'; booked: number; failed: number; pending: number; done: boolean }
+  | { type: 'booking_sse_start'; sessionId: string; jobId: string; pending: number }
+  | { type: 'booking_sse_end'; sessionId: string; booked: number; failed: number; blocked?: boolean }
+  | { type: 'reschedule_identify'; eventsListed: number; bestMatchId?: string; ambiguous: boolean }
+  | { type: 'reschedule_execute'; eventId: string; confirmed: boolean; success: boolean; error?: string };
 
 export class DebugLogger {
   entries: DebugEntry[] = [];
@@ -49,6 +56,45 @@ export class DebugLogger {
         break;
       case 'final_response':
         console.log(`${prefix} len=${entry.textLength}`);
+        break;
+      case 'booking_job_init':
+        console.log(
+          `[BOOKING] init jobId=${entry.jobId} total=${entry.total} days=[${entry.days.join(',')}]` +
+            (entry.blocked ? ` BLOCKED: ${entry.reason}` : '')
+        );
+        break;
+      case 'booking_batch_item':
+        console.log(
+          `[BOOKING] ${entry.day} action=${entry.action}` +
+            (entry.isSlotFree !== undefined ? ` isSlotFree=${entry.isSlotFree}` : '') +
+            (entry.eventId ? ` eventId=${entry.eventId}` : '') +
+            (entry.error ? ` err=${entry.error}` : '')
+        );
+        break;
+      case 'booking_batch_done':
+        console.log(
+          `[BOOKING] batch done booked=${entry.booked} failed=${entry.failed} pending=${entry.pending} done=${entry.done}`
+        );
+        break;
+      case 'booking_sse_start':
+        console.log(`[BOOKING] SSE start session=${entry.sessionId} job=${entry.jobId} pending=${entry.pending}`);
+        break;
+      case 'booking_sse_end':
+        console.log(
+          `[BOOKING] SSE end session=${entry.sessionId} booked=${entry.booked} failed=${entry.failed}` +
+            (entry.blocked ? ' (duplicate blocked)' : '')
+        );
+        break;
+      case 'reschedule_identify':
+        console.log(
+          `[RESCHEDULE] identify listed=${entry.eventsListed} best=${entry.bestMatchId ?? 'none'} ambiguous=${entry.ambiguous}`
+        );
+        break;
+      case 'reschedule_execute':
+        console.log(
+          `[RESCHEDULE] eventId=${entry.eventId} confirmed=${entry.confirmed} success=${entry.success}` +
+            (entry.error ? ` err=${entry.error}` : '')
+        );
         break;
     }
   }

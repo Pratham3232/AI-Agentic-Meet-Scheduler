@@ -9,6 +9,10 @@ import {
   ASYNC_PROMISE_BAN,
   RESCHEDULE_WORKFLOW_RULES,
 } from './prompt-shared';
+import {
+  buildCachedCalendarPromptBlock,
+  buildPendingRescheduleBlock,
+} from './event-cache';
 
 function buildConversationContext(state: ConversationState): string {
   const history = state.conversationHistory;
@@ -167,6 +171,10 @@ ${slotBlock}
 ${missingSlots.length > 0 ? `Still needed: ${missingSlots.join(', ')}` : 'All slots collected — call find_free_slots or confirm.'}
 Awaiting confirmation: ${state.awaitingConfirmation}
 ${resultsBlock}
+${state.bookingPlanConfirmed && state.confirmedPlanSummary ? `\n## Confirmed booking plan (do not re-ask)\n${state.confirmedPlanSummary}` : ''}
+${state.bookingJob?.status === 'completed' ? '\n## Booking job COMPLETE — do not call init_booking_job or execute_booking_batch again.' : ''}
+${buildCachedCalendarPromptBlock(state)}
+${buildPendingRescheduleBlock(state)}
 
 ## Voice summary (REQUIRED)
 After your response, on a NEW LINE, write exactly:

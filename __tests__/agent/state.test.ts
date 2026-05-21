@@ -13,6 +13,11 @@ describe('Agent State Management', () => {
   const initialState: ConversationState = {
     sessionId: 'test-session',
     bookingJob: null,
+    bookingPlanConfirmed: false,
+    confirmedPlanSummary: null,
+    cachedCalendar: null,
+    calendarVersion: 0,
+    pendingReschedule: null,
     slots: {
       duration: null,
       day: null,

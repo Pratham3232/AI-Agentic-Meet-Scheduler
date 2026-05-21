@@ -50,6 +50,17 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
             type: 'string',
             description: 'Local time on each day, e.g. "10:00" or "10 AM"',
           },
+          dayPattern: {
+            type: 'object',
+            properties: {
+              monthOffset: { type: 'number', description: '0=this month, 1=next month' },
+              weekdaysOnly: { type: 'boolean', description: 'Mon–Fri within resolved week' },
+            },
+          },
+          userMessage: {
+            type: 'string',
+            description: 'Optional user text for server day resolution (e.g. first week of next month Mon–Fri)',
+          },
         },
         required: ['durationMinutes', 'days', 'preferredTime'],
         additionalProperties: false,
@@ -78,6 +89,10 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
               required: ['day', 'start', 'end', 'summary'],
             },
             description: 'All days/times to book',
+          },
+          force: {
+            type: 'boolean',
+            description: 'Set true only if user explicitly asks to restart a completed job',
           },
         },
         required: ['entries'],

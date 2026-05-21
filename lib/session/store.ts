@@ -48,6 +48,11 @@ export function createInitialState(sessionId: string): ConversationState {
   return {
     sessionId,
     bookingJob: null,
+    bookingPlanConfirmed: false,
+    confirmedPlanSummary: null,
+    cachedCalendar: null,
+    calendarVersion: 0,
+    pendingReschedule: null,
     slots: {
       duration: null,
       day: null,
