@@ -29,8 +29,9 @@
       - Go to "APIs & Services" > "OAuth consent screen"
       - Choose "External" user type
       - Fill in app name and support email
-      - Add scopes: `calendar`, `calendar.events`, `userinfo.email`
-      - Add your email as a test user (required while app is in "Testing" status)
+      - Add scopes: `calendar.events`, `calendar.readonly`, `userinfo.email`
+      - Add test users (required while app is in "Testing" status)
+      - To allow any Google user: click "Publish App" (users will see an "unverified app" warning but can proceed via Advanced → Continue)
    
    e. Create OAuth 2.0 Credentials:
       - Go to "APIs & Services" > "Credentials"
@@ -118,12 +119,14 @@ This opens a browser, prompts sign-in, and outputs your refresh token.
 ```bash
 npm i -g vercel
 vercel login
+vercel link
 vercel --prod
 ```
 
-### Environment Variables (Vercel Dashboard)
+### Environment Variables
 
-Add these in Vercel dashboard under Settings > Environment Variables:
+Add via CLI (`vercel env add <KEY>`) or Vercel dashboard (Settings > Environment Variables).
+Select **all three environments** (Production, Preview, Development) for each:
 
 | Variable | Value |
 |---|---|
@@ -136,6 +139,8 @@ Add these in Vercel dashboard under Settings > Environment Variables:
 | `SESSION_SECRET` | Random string for HMAC signing (generate with `openssl rand -hex 32`) |
 | `GOOGLE_CALENDAR_ID` | `primary` (or specific calendar ID) |
 
+After adding env vars, redeploy: `vercel --prod`
+
 ### Google Cloud Console Update
 
 After deploying, add your production redirect URI:
@@ -143,12 +148,21 @@ After deploying, add your production redirect URI:
 2. Edit your OAuth client
 3. Add authorized redirect URI: `https://your-app.vercel.app/api/auth/callback`
 
+### Function Timeouts
+
+Timeouts are configured via `export const maxDuration` in each route file (App Router pattern). No `vercel.json` functions config needed:
+- `/api/chat` — 30s (LLM agentic loop + calendar queries)
+- `/api/realtime/tools` — 15s (calendar tool execution)
+- `/api/realtime/session` — 10s (OpenAI token mint)
+- `/api/auth/callback` — 10s (Google token exchange)
+
 ### Notes
 
 - The voice WebRTC connection goes directly from the browser to OpenAI — no server relay for audio
 - Only the token-minting route (`/api/realtime/session`) and tool execution route (`/api/realtime/tools`) are server-side
 - Edge middleware runs at Vercel's edge locations for low-latency auth verification
 - Redis stores both session state (2-hour TTL) and OAuth tokens (30-day TTL)
+- `vercel.json` only sets `{"framework": "nextjs"}` — all other config is in-code
 
 ## Testing
 

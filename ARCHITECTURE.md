@@ -102,9 +102,11 @@ Browser                      Server                         Google
 
 ### Key Auth Design Decisions
 
+- **OAuth Scopes**: Uses `calendar.events` + `calendar.readonly` + `userinfo.email` (sensitive, not restricted) — avoids Google's verification requirement for the full `calendar` scope
 - **Edge Middleware** (`middleware.ts`): Uses Web Crypto API (not Node `crypto`) for HMAC verification, compatible with Vercel Edge Runtime
 - **AsyncLocalStorage**: Per-user OAuth2Client is threaded through all calendar operations via `AsyncLocalStorage`, avoiding changes to function signatures throughout the call chain
 - **Fallback**: When `SESSION_SECRET` is not set, middleware passes all requests through (backward-compatible dev mode using `.env.local` refresh token)
+- **Published App**: Any Google user can sign in without being added as a test user. Unverified app warning is shown but users can proceed via Advanced → Continue
 
 ## Two Communication Pipelines
 
@@ -250,9 +252,9 @@ All server-side and client-side operations are instrumented with `[PERF]` prefix
 | `app/api/auth/logout/route.ts` | Clear tokens + cookie |
 | `app/api/auth/status/route.ts` | Auth status check (email + authenticated flag) |
 | `app/page.tsx` | Main UI — text chat, WebRTC voice, settings, auth display |
-| `app/api/chat/route.ts` | Text chat orchestrator — slot extraction, LLM loop, tool execution |
-| `app/api/realtime/session/route.ts` | Mints ephemeral WebRTC token |
-| `app/api/realtime/tools/route.ts` | Executes tool calls from Realtime API |
+| `app/api/chat/route.ts` | Text chat orchestrator — slot extraction, LLM loop, tool execution (maxDuration: 30s) |
+| `app/api/realtime/session/route.ts` | Mints ephemeral WebRTC token (maxDuration: 10s) |
+| `app/api/realtime/tools/route.ts` | Executes tool calls from Realtime API (maxDuration: 15s) |
 | `lib/auth/cookie.ts` | HMAC-signed session cookie management |
 | `lib/auth/tokens.ts` | Per-user OAuth token storage in Redis |
 | `lib/auth/resolve.ts` | Resolves current user's OAuth2Client from cookie |

@@ -283,11 +283,15 @@ npm run test:integration    # Calendar integration tests (requires credentials)
 
 ## Deployment
 
+Deployed on Vercel at: **https://ai-agentic-meet-scheduler.vercel.app**
+
 ```bash
+vercel login
+vercel link
 vercel --prod
 ```
 
-Required environment variables in Vercel dashboard:
+Required environment variables (add via `vercel env add <KEY>` for all environments):
 
 | Variable | Purpose |
 |---|---|
@@ -298,8 +302,11 @@ Required environment variables in Vercel dashboard:
 | `UPSTASH_REDIS_REST_TOKEN` | Redis auth |
 | `NEXT_PUBLIC_APP_URL` | Your deployed URL (for OAuth redirect) |
 | `SESSION_SECRET` | HMAC signing key for session cookies |
+| `GOOGLE_CALENDAR_ID` | `primary` (or specific calendar ID) |
 
-Add your deployed URL + `/api/auth/callback` as an authorized redirect URI in Google Cloud Console.
+After deploying, add `<your-url>/api/auth/callback` as an authorized redirect URI in Google Cloud Console.
+
+Function timeouts are set via `export const maxDuration` in each route file (Next.js App Router pattern). `vercel.json` only sets `{"framework": "nextjs"}`.
 
 The WebRTC connection goes directly from the browser to OpenAI — no server relay needed for audio.
 

@@ -63,13 +63,20 @@
 - Gap logic: "1 hour apart" = 1 hour of FREE TIME between end of one and start of next
 
 ### 8. Per-User Google OAuth Authentication
-- **Login:** `/api/auth/login` → Google OAuth consent screen with calendar + email scopes
+- **Login:** `/api/auth/login` → Google OAuth consent screen with `calendar.events`, `calendar.readonly`, and `userinfo.email` scopes (sensitive, not restricted — no Google verification required)
 - **Callback:** `/api/auth/callback` → token exchange, email fetch, Redis storage, HMAC cookie
 - **Middleware:** Edge-compatible (`middleware.ts`) using Web Crypto API for HMAC verification
 - **Token storage:** Upstash Redis at `auth:<userId>` with 30-day TTL
 - **Auth threading:** `AsyncLocalStorage<OAuth2Client>` via `withCalendarAuth()` — no function signature changes needed
 - **Fallback:** When `SESSION_SECRET` is not set, skips auth (backward-compatible dev mode using `.env.local` refresh token)
 - **Logout:** Clears Redis tokens + session cookie
+- **Published app:** Any Google user can sign in (unverified app warning with "Advanced → Continue" bypass)
+
+### 8a. Vercel Deployment
+- `vercel.json` sets `{"framework": "nextjs"}` only — no functions config
+- Function timeouts configured via `export const maxDuration` in each route file (App Router pattern):
+  - `/api/chat` — 30s, `/api/realtime/tools` — 15s, `/api/realtime/session` — 10s, `/api/auth/callback` — 10s
+- Live deployment: `https://ai-agentic-meet-scheduler.vercel.app`
 
 ### 9. User-Configurable Working Hours
 - Settings panel in UI (gear icon) with start/end hour dropdowns

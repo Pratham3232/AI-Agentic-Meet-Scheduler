@@ -77,7 +77,7 @@ agenticMeetScheduler/
 ├── next.config.js                    # Next.js configuration
 ├── package.json                      # Dependencies & scripts
 ├── tsconfig.json                     # TypeScript configuration
-├── vercel.json                       # Vercel deployment config
+├── vercel.json                       # Vercel config (framework: nextjs only; timeouts via route exports)
 ├── README.md                         # Full project documentation
 ├── SETUP.md                          # Setup instructions
 ├── ARCHITECTURE.md                   # Architecture & latency profile
@@ -91,11 +91,13 @@ agenticMeetScheduler/
 **Files:** `middleware.ts`, `lib/auth/cookie.ts`, `lib/auth/tokens.ts`, `lib/auth/resolve.ts`, `app/api/auth/*`
 
 Per-user Google OAuth flow:
+- OAuth scopes: `calendar.events` + `calendar.readonly` + `userinfo.email` (sensitive, not restricted — no Google verification needed)
 - Edge middleware validates HMAC-signed session cookies using Web Crypto API
 - OAuth callback exchanges code for tokens, stores in Redis, sets cookie
 - `resolveCalendarAuth()` reads cookie → Redis tokens → creates OAuth2Client
 - `withCalendarAuth()` threads the client via `AsyncLocalStorage` to all calendar operations
 - Fallback: when `SESSION_SECRET` is not set, all requests pass through (dev mode)
+- Published app: any Google user can sign in (unverified warning screen with bypass)
 
 ### Layer 1 — Voice I/O (WebRTC)
 **Files:** `app/api/realtime/session/route.ts`, `app/page.tsx` (voice section)
