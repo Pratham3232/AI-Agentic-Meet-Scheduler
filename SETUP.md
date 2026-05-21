@@ -12,12 +12,9 @@
    cp .env.local.example .env.local
    ```
    
-   Then fill in your API keys in `.env.local`:
-   - `OPENAI_API_KEY` - Get from OpenAI dashboard
-   - Google Calendar credentials (see below)
-   - Upstash Redis credentials (see below)
+   Fill in your API keys in `.env.local` (see full reference below).
 
-3. **Setup Google Calendar** (Option A - Recommended for dev)
+3. **Setup Google Calendar OAuth**
    
    a. Go to [Google Cloud Console](https://console.cloud.google.com/)
    
@@ -28,28 +25,26 @@
       - Search for "Google Calendar API"
       - Click "Enable"
    
-   d. Create OAuth 2.0 Credentials:
+   d. Configure OAuth Consent Screen:
+      - Go to "APIs & Services" > "OAuth consent screen"
+      - Choose "External" user type
+      - Fill in app name and support email
+      - Add scopes: `calendar`, `calendar.events`, `userinfo.email`
+      - Add your email as a test user (required while app is in "Testing" status)
+   
+   e. Create OAuth 2.0 Credentials:
       - Go to "APIs & Services" > "Credentials"
       - Click "Create Credentials" > "OAuth client ID"
       - Application type: "Web application"
-      - Add authorized redirect URI: `http://localhost:3000/oauth2callback`
-      - Download the JSON file
+      - Add authorized redirect URI: `http://localhost:3000/api/auth/callback`
+      - Download or copy the Client ID and Client Secret
    
-   e. Add credentials to `.env.local`:
+   f. Add credentials to `.env.local`:
       ```
       GOOGLE_CLIENT_ID=your_client_id
       GOOGLE_CLIENT_SECRET=your_client_secret
-      ```
-   
-   f. Run the auth script to get refresh token:
-      ```bash
-      npm run auth:google
-      ```
-      This will open a browser, sign in with Google, and output your refresh token.
-   
-   g. Add the refresh token to `.env.local`:
-      ```
-      GOOGLE_REFRESH_TOKEN=your_refresh_token
+      NEXT_PUBLIC_APP_URL=http://localhost:3000
+      SESSION_SECRET=any-random-string-at-least-32-chars
       ```
 
 4. **Setup Upstash Redis**
@@ -72,22 +67,88 @@
    ```
    
    Open [http://localhost:3000](http://localhost:3000)
+   
+   You will be redirected to Google sign-in. After authentication, you'll land on the chat interface with access to your Google Calendar.
 
-## Alternative: Google Service Account (Production)
+## Environment Variables Reference
 
-For production deployments, use a service account instead:
+```env
+# Required — OpenAI
+OPENAI_API_KEY=sk-...
 
-1. Go to Google Cloud Console > IAM & Admin > Service Accounts
-2. Create a new service account
-3. Download the JSON key file
-4. Share your Google Calendar with the service account email
-5. Base64 encode the JSON and add to `.env.local`:
-   ```bash
-   cat service-account.json | base64
-   ```
-   ```
-   GOOGLE_SERVICE_ACCOUNT_JSON=your_base64_encoded_json
-   ```
+# Required — Google Calendar OAuth
+GOOGLE_CLIENT_ID=your_client_id
+GOOGLE_CLIENT_SECRET=your_client_secret
+
+# Required — Upstash Redis (sessions + per-user OAuth tokens)
+UPSTASH_REDIS_REST_URL=your_redis_url
+UPSTASH_REDIS_REST_TOKEN=your_redis_token
+
+# Required for per-user OAuth (production)
+NEXT_PUBLIC_APP_URL=http://localhost:3000       # Your app URL (no trailing slash)
+SESSION_SECRET=your-random-secret-string         # HMAC signing key for session cookies
+
+# Optional — Calendar ID (defaults to "primary")
+GOOGLE_CALENDAR_ID=primary
+
+# Optional — Fallback for dev without OAuth flow
+# When SESSION_SECRET is unset, the app skips auth and uses this token directly
+GOOGLE_REFRESH_TOKEN=your_refresh_token
+```
+
+### Dev Mode (Without OAuth Flow)
+
+For quick local development without setting up the full OAuth flow:
+
+1. Leave `SESSION_SECRET` unset (or empty) in `.env.local`
+2. Set `GOOGLE_REFRESH_TOKEN` with a token obtained via `npm run auth:google`
+3. The middleware will pass all requests through without authentication
+4. All calendar operations use the static refresh token from `.env.local`
+
+To generate a refresh token for dev mode:
+```bash
+npm run auth:google
+```
+This opens a browser, prompts sign-in, and outputs your refresh token.
+
+## Production Deployment
+
+### Vercel
+
+```bash
+npm i -g vercel
+vercel login
+vercel --prod
+```
+
+### Environment Variables (Vercel Dashboard)
+
+Add these in Vercel dashboard under Settings > Environment Variables:
+
+| Variable | Value |
+|---|---|
+| `OPENAI_API_KEY` | Your OpenAI API key |
+| `GOOGLE_CLIENT_ID` | OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | OAuth client secret |
+| `UPSTASH_REDIS_REST_URL` | Redis REST URL |
+| `UPSTASH_REDIS_REST_TOKEN` | Redis REST token |
+| `NEXT_PUBLIC_APP_URL` | Your deployed URL (e.g., `https://your-app.vercel.app`) |
+| `SESSION_SECRET` | Random string for HMAC signing (generate with `openssl rand -hex 32`) |
+| `GOOGLE_CALENDAR_ID` | `primary` (or specific calendar ID) |
+
+### Google Cloud Console Update
+
+After deploying, add your production redirect URI:
+1. Go to Google Cloud Console > APIs & Services > Credentials
+2. Edit your OAuth client
+3. Add authorized redirect URI: `https://your-app.vercel.app/api/auth/callback`
+
+### Notes
+
+- The voice WebRTC connection goes directly from the browser to OpenAI — no server relay for audio
+- Only the token-minting route (`/api/realtime/session`) and tool execution route (`/api/realtime/tools`) are server-side
+- Edge middleware runs at Vercel's edge locations for low-latency auth verification
+- Redis stores both session state (2-hour TTL) and OAuth tokens (30-day TTL)
 
 ## Testing
 
@@ -101,27 +162,31 @@ Run integration tests (requires valid credentials):
 npm run test:integration
 ```
 
-## Deployment
-
-Deploy to Vercel:
-```bash
-npm i -g vercel
-vercel login
-vercel --prod
-```
-
-Add all environment variables in Vercel dashboard under Settings > Environment Variables.
-
 ## Troubleshooting
 
+**Redirected to login in a loop**
+- Ensure `SESSION_SECRET` is set and matches between restarts
+- Check that your Google OAuth consent screen has your email as a test user
+- Verify the redirect URI in Google Cloud Console matches exactly: `<NEXT_PUBLIC_APP_URL>/api/auth/callback`
+
 **"Google OAuth2 credentials not configured"**
-- Ensure all three Google env vars are set: CLIENT_ID, CLIENT_SECRET, REFRESH_TOKEN
+- Ensure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set
+- For dev mode without OAuth: set `GOOGLE_REFRESH_TOKEN` and leave `SESSION_SECRET` unset
 
 **"Failed to get session" / Redis errors**
 - Check Upstash credentials
 - Ensure Redis database is active
 
 **"Failed to fetch free slots"**
-- Verify calendar API is enabled in Google Cloud Console
-- Check that calendar ID is correct (use "primary" for main calendar)
-- Ensure refresh token is valid (re-run auth:google if needed)
+- Verify Calendar API is enabled in Google Cloud Console
+- Check that the user granted calendar permissions during OAuth
+- For dev mode: ensure refresh token is valid (re-run `npm run auth:google`)
+
+**Voice connection failed / 404 on model**
+- The voice pipeline uses `gpt-realtime-mini`. Ensure your OpenAI API key has access to the Realtime API.
+
+**Webpack cache errors (Cannot find module './276.js')**
+- Run `rm -rf .next` and restart the dev server
+
+**Agent reports wrong date (e.g., yesterday's date)**
+- This was fixed — all date computation now uses timezone-aware `formatInTimeZone()`. If you see this, ensure your browser is sending the correct timezone.

@@ -20,12 +20,14 @@ import { getTimeWindowBounds, formatSlotList, formatTimeSlot } from '@/lib/calen
 import { resolveConflict } from '@/lib/agent/conflict-resolver';
 import { DebugLogger } from '@/lib/debug';
 import { generateVoiceScript } from '@/lib/voice-script';
-import { ConversationState } from '@/types';
+import { ConversationState, WorkingHours } from '@/types';
+import { withCalendarAuth } from '@/lib/calendar/auth';
+import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const MAX_TOOL_LOOPS = 5; // prevent infinite tool call chains
-const MAX_HISTORY_TURNS = 12; // keep last 12 messages to limit token use
+const MAX_TOOL_LOOPS = 8;
+const MAX_HISTORY_TURNS = 30;
 
 // ---------------------------------------------------------------------------
 // Tool execution — returns the JSON result sent back to the LLM as a tool msg
@@ -35,8 +37,10 @@ async function executeTool(
   args: Record<string, any>,
   state: ConversationState,
   timezone: string,
-  debug: DebugLogger
+  debug: DebugLogger,
+  workingHours?: WorkingHours
 ): Promise<{ toolResult: Record<string, any>; stateUpdates: Partial<ConversationState> }> {
+  const tExec = Date.now();
   debug.log({ type: 'tool_call', tool: toolName, args });
 
   // ── find_free_slots ────────────────────────────────────────────────────────
@@ -47,7 +51,7 @@ async function executeTool(
       timeWindow: string;
     };
 
-    const bounds = getTimeWindowBounds(day, timeWindow, timezone);
+    const bounds = getTimeWindowBounds(day, timeWindow, timezone, undefined, workingHours);
 
     debug.log({
       type: 'calendar_query',
@@ -60,15 +64,26 @@ async function executeTool(
     let slots = await findFreeSlots(bounds.start, bounds.end, duration, undefined, debug);
     let conflictStrategy: string | null = null;
     let conflictMessage = '';
+    let blockingEvents: Array<{ summary: string; start: string; end: string; display: string }> = [];
 
     if (slots.length === 0) {
-      const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone);
+      // Fetch the events that are blocking this window so the LLM can show them
+      const existingEvents = await listEvents(bounds.start, bounds.end, undefined, debug);
+      blockingEvents = existingEvents
+        .filter(e => e.start?.dateTime && e.end?.dateTime)
+        .map(e => ({
+          summary: e.summary ?? '(no title)',
+          start: e.start.dateTime!,
+          end: e.end.dateTime!,
+          display: formatTimeSlot({ start: e.start.dateTime!, end: e.end.dateTime! }, timezone),
+        }));
+
+      const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
       slots = conflict.slots;
       conflictStrategy = conflict.strategy;
       conflictMessage = conflict.message;
     }
 
-    // Update state to reflect what the LLM searched for (authoritative)
     const updatedSlots = {
       ...state.slots,
       duration,
@@ -79,10 +94,10 @@ async function executeTool(
     debug.log({
       type: 'tool_result',
       tool: 'find_free_slots',
-      summary: `${slots.length} slot(s) found, strategy=${conflictStrategy ?? 'direct'}`,
+      summary: `${slots.length} slot(s) found, strategy=${conflictStrategy ?? 'direct'}, blocking=${blockingEvents.length}`,
     });
 
-    const toolResult = {
+    const toolResult: Record<string, any> = {
       slotsFound: slots.length,
       slots: slots.slice(0, 5).map(s => ({
         start: s.start,
@@ -94,6 +109,11 @@ async function executeTool(
       searchParams: { duration, day, timeWindow },
     };
 
+    if (blockingEvents.length > 0) {
+      toolResult.blockingEvents = blockingEvents;
+    }
+
+    console.log(`[PERF][chat] executeTool find_free_slots: ${Date.now() - tExec}ms`);
     return {
       toolResult,
       stateUpdates: {
@@ -119,6 +139,7 @@ async function executeTool(
 
     debug.log({ type: 'tool_result', tool: 'create_event', summary: `created eventId=${event.id}` });
 
+    console.log(`[PERF][chat] executeTool create_event: ${Date.now() - tExec}ms`);
     return {
       toolResult: {
         success: true,
@@ -153,10 +174,14 @@ async function executeTool(
         summary: e.summary ?? '(no title)',
         start: e.start?.dateTime,
         end:   e.end?.dateTime,
+        display: e.start?.dateTime && e.end?.dateTime
+          ? formatTimeSlot({ start: e.start.dateTime, end: e.end.dateTime }, timezone)
+          : 'All day',
         attendees: (e.attendees ?? []).map((a: { email: string }) => a.email),
       })),
     };
 
+    console.log(`[PERF][chat] executeTool list_events: ${Date.now() - tExec}ms`);
     return { toolResult, stateUpdates: {} };
   }
 
@@ -171,6 +196,7 @@ async function executeTool(
       summary: event ? `found "${event.summary}" on ${event.start.dateTime}` : 'not found',
     });
 
+    console.log(`[PERF][chat] executeTool lookup_event: ${Date.now() - tExec}ms`);
     return {
       toolResult: event
         ? { found: true, id: event.id, summary: event.summary, start: event.start.dateTime, end: event.end.dateTime }
@@ -185,11 +211,13 @@ async function executeTool(
     try {
       await deleteEvent(eventId);
       debug.log({ type: 'tool_result', tool: 'delete_event', summary: `deleted ${eventId}` });
+      console.log(`[PERF][chat] executeTool delete_event: ${Date.now() - tExec}ms`);
       return {
         toolResult: { success: true, deletedEventId: eventId },
         stateUpdates: {},
       };
     } catch {
+      console.log(`[PERF][chat] executeTool delete_event (not found): ${Date.now() - tExec}ms`);
       return {
         toolResult: { success: false, error: 'Event not found or already deleted.' },
         stateUpdates: {},
@@ -197,6 +225,7 @@ async function executeTool(
     }
   }
 
+  console.log(`[PERF][chat] executeTool unknown: ${toolName}`);
   throw new Error(`Unknown tool: ${toolName}`);
 }
 
@@ -204,16 +233,26 @@ async function executeTool(
 // POST /api/chat
 // ---------------------------------------------------------------------------
 export async function POST(req: NextRequest) {
+  const t0 = Date.now();
   const debug = new DebugLogger();
 
   try {
-    const { message, sessionId: providedSessionId, timezone = 'UTC' } = await req.json();
+    const { message, sessionId: providedSessionId, timezone = 'UTC', workingHours } = await req.json();
+
+    const userAuth = await resolveCalendarAuth();
+    const runWithAuth = <T>(fn: () => Promise<T>) =>
+      userAuth ? withCalendarAuth(userAuth, fn) : fn();
+
+    return await runWithAuth(async () => {
 
     const sessionId = providedSessionId || uuidv4();
     let state = (await getSession(sessionId)) ?? createInitialState(sessionId);
+    console.log(`[PERF][chat] session load: ${Date.now() - t0}ms`);
 
     // 1. Rule-based slot extraction (updates + stale detection)
+    const tSlotExtract = Date.now();
     state = extractAndUpdateSlots(message, state, debug);
+    console.log(`[PERF][chat] slot extraction: ${Date.now() - tSlotExtract}ms`);
 
     // 2. Add user message to history
     state = addMessage(state, 'user', message);
@@ -222,16 +261,19 @@ export async function POST(req: NextRequest) {
     //    immediately (saves an LLM round-trip — the LLM was going to call it anyway).
     const needsAutoSearch = hasAllRequiredSlots(state) && state.calendarResults.length === 0;
     if (needsAutoSearch) {
+      const tAutoSearch = Date.now();
       debug.log({ type: 'tool_call', tool: 'find_free_slots', args: { duration: state.slots.duration, day: state.slots.day, timeWindow: state.slots.timeWindow } });
       const { toolResult, stateUpdates } = await executeTool(
         'find_free_slots',
         { duration: state.slots.duration!, day: state.slots.day!, timeWindow: state.slots.timeWindow! },
         state,
         timezone,
-        debug
+        debug,
+        workingHours
       );
       state = { ...state, ...stateUpdates } as ConversationState;
       if (stateUpdates.slots) state.slots = stateUpdates.slots as typeof state.slots;
+      console.log(`[PERF][chat] auto-search: ${Date.now() - tAutoSearch}ms`);
     }
 
     // 4. Build messages for the LLM (trim history to last N turns to save tokens)
@@ -239,14 +281,20 @@ export async function POST(req: NextRequest) {
       .slice(-(MAX_HISTORY_TURNS * 2))
       .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
+    if (workingHours) {
+      state.workingHours = workingHours;
+    }
+
     const chatMessages: ChatCompletionMessageParam[] = [
-      { role: 'system', content: buildSystemPrompt(state, timezone) },
+      { role: 'system', content: buildSystemPrompt(state, timezone, workingHours) },
       ...history,
     ];
 
     // 5. Agentic tool loop
     let loopCount = 0;
     let finalText = '';
+    let lastListedEvents: Array<{ id: string; summary: string; display: string }> | null = null;
+    const tLoop = Date.now();
 
     while (loopCount < MAX_TOOL_LOOPS) {
       loopCount++;
@@ -258,6 +306,7 @@ export async function POST(req: NextRequest) {
         toolsEnabled: true,
       });
 
+      const tLLM = Date.now();
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: chatMessages,
@@ -267,6 +316,7 @@ export async function POST(req: NextRequest) {
 
       const assistantMsg = completion.choices[0].message;
       const toolCalls = assistantMsg.tool_calls ?? [];
+      console.log(`[PERF][chat] LLM call #${loopCount}: ${Date.now() - tLLM}ms`);
 
       debug.log({
         type: 'llm_response',
@@ -294,12 +344,18 @@ export async function POST(req: NextRequest) {
           args,
           state,
           timezone,
-          debug
+          debug,
+          workingHours
         );
 
         // Apply state updates
         state = { ...state, ...stateUpdates } as ConversationState;
         if (stateUpdates.slots) state.slots = stateUpdates.slots as typeof state.slots;
+        if (toolName === 'list_events' && toolResult.events?.length) {
+          lastListedEvents = toolResult.events.map((e: any) => ({
+            id: e.id, summary: e.summary, display: e.display,
+          }));
+        }
 
         chatMessages.push({
           role: 'tool',
@@ -309,6 +365,7 @@ export async function POST(req: NextRequest) {
       }
       // Loop back to let the LLM formulate a response based on tool results
     }
+    console.log(`[PERF][chat] agentic loop (${loopCount} iterations): ${Date.now() - tLoop}ms`);
 
     if (!finalText) {
       finalText = 'Sorry, I had trouble processing that. Could you try again?';
@@ -327,7 +384,9 @@ export async function POST(req: NextRequest) {
 
     // 5. Persist
     state = addMessage(state, 'assistant', displayText);
+    const tSave = Date.now();
     await saveSession(state);
+    console.log(`[PERF][chat] session save: ${Date.now() - tSave}ms`);
 
     const formattedSlots = state.calendarResults.length > 0
       ? state.calendarResults.slice(0, 5).map(s => ({
@@ -337,11 +396,13 @@ export async function POST(req: NextRequest) {
         }))
       : undefined;
 
+    console.log(`[PERF][chat] total request: ${Date.now() - t0}ms`);
     return NextResponse.json({
       message: displayText,
       voiceScript,
       sessionId,
       slots: formattedSlots,
+      events: lastListedEvents || undefined,
       state: {
         slots: state.slots,
         hasAllSlots: hasAllRequiredSlots(state),
@@ -350,9 +411,12 @@ export async function POST(req: NextRequest) {
       },
       debug: debug.summary(),
     });
+
+    }); // end runWithAuth
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[SCHEDULER:error]', message);
+    console.log(`[PERF][chat] total request (error): ${Date.now() - t0}ms`);
     return NextResponse.json({ error: 'Failed to process message', detail: message }, { status: 500 });
   }
 }

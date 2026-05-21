@@ -4,6 +4,11 @@ export interface TimeSlot {
   confidence?: number;
 }
 
+export interface WorkingHours {
+  startHour: number; // 0-23
+  endHour: number;   // 0-23
+}
+
 export interface ConversationState {
   sessionId: string;
   slots: {
@@ -17,6 +22,7 @@ export interface ConversationState {
   lastSearchParams: SearchParams | null;
   turnCount: number;
   conversationHistory: Message[];
+  workingHours?: WorkingHours;
 }
 
 export interface SearchParams {

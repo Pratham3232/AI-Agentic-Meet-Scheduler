@@ -1,261 +1,169 @@
 # Implementation Summary
 
-## ✅ Complete Implementation
+## Complete Feature Set
 
-All features from the assignment README have been fully implemented:
-
-### 1. Multi-Turn Conversation ✅
-- **Slot-filling pattern** implemented in `lib/agent/slot-filler.ts`
-- Collects: duration → day → time window → confirmation
+### 1. Multi-Turn Conversation with Context Memory
+- **Slot-filling pattern** in `lib/agent/slot-filler.ts` — collects duration, day, time window, attendees
+- **Conversation context injection** — last 20 messages summarized and injected into system prompt via `buildConversationContext()`
+- Agent reads full conversation history before every response; carries forward details across topic deviations
 - State management via `lib/agent/state.ts`
-- Session persistence with Redis
+- Session persistence with Upstash Redis (2-hour TTL)
+- Stale search detection — auto-invalidates results when user changes requirements
+- History window: 30 turns (increased from 12 to support complex multi-step flows)
 
-### 2. Natural Language Time Parsing ✅
-- Quick pattern matching for common expressions (today, tomorrow, etc.)
-- LLM-based parsing for complex expressions in `lib/agent/time-parser.ts`
-- Handles: "late next week", "before my 6pm flight", "last weekday of this month"
-- Returns confidence scores for ambiguous queries
+### 2. Natural Language Understanding
+- Rule-based extraction for common patterns: "tomorrow morning", "half an hour", "ASAP"
+- Word-to-number conversion: "one hour" → 60, "thirty minutes" → 30
+- Weekday resolution: "next Monday", "this Friday" → ISO date
+- Month/date parsing: "May 18", "18th May" → ISO date
+- ASAP family: "right now", "urgent", "soonest" → today + anytime
+- Duration parsing: "half an hour" → 30, "hour and a half" → 90, "N hours" → N × 60
 
-### 3. Google Calendar Integration ✅
-- **Freebusy queries** in `lib/calendar/freebusy.ts`
-- **Event creation** in `lib/calendar/events.ts`
-- **Event lookup** for relative date references
-- OAuth2 and service account support
+### 3. Google Calendar Integration
+- **Freebusy queries** in `lib/calendar/freebusy.ts` — gap-walking algorithm with 30-min boundaries
+- **Event creation** in `lib/calendar/events.ts` — with attendees and description
+- **Event listing** — date range queries with formatted display
+- **Event lookup** — search by name for reschedule/cancel flows
+- **Event deletion** — remove events by ID
+- **Per-user OAuth2** authentication with AsyncLocalStorage threading
 
-### 4. Conflict Resolution ✅
-- 3-tier fallback chain in `lib/agent/conflict-resolver.ts`:
-  1. Expand time window to full day
-  2. Try adjacent days (±1)
-  3. Try next 3 weekdays
-- Automatic alternative suggestions
+### 4. Advanced Conflict Resolution
+- When no slots found, **blocking events are fetched** and included in the tool result
+- 3-strategy parallel fallback in `lib/agent/conflict-resolver.ts`:
+  1. Expand time window to full working hours range
+  2. Try adjacent days (±1), both queried in parallel
+  3. Try next 3 weekdays, all queried in parallel
+- All strategies run via `Promise.all` for minimum latency
+- All strategies respect user's configured working hours
+- LLM follows a 3-step response pattern: show blocker → offer alternatives → suggest next steps
+- Agent never dead-ends with "no slots available"
 
-### 5. Voice Interface ✅
-- OpenAI Realtime API integration in `app/api/voice/route.ts`
-- Voice button component in `components/VoiceButton.tsx`
-- Microphone permission handling
-- Sub-800ms latency path
+### 5. Voice Interface (WebRTC)
+- OpenAI Realtime API via WebRTC (not WebSocket)
+- Model: `gpt-realtime-mini` with Whisper-1 transcription
+- Server VAD: 800ms silence, 0.6 threshold, 200ms prefix padding
+- Voice: "coral"
+- Ephemeral token minting via `/api/realtime/session`
+- DataChannel for session config, tool calls, and transcript events
+- Voice prompt includes timezone-aware dates, working hours, conflict handling rules
 
-### 6. LLM Tool Integration ✅
-- Three tools defined in `lib/agent/tools.ts`:
-  - `find_free_slots` - Query availability
-  - `create_event` - Book meeting
-  - `lookup_event` - Search existing events
-- Dynamic system prompt in `lib/agent/prompt.ts`
-- State injection for context-aware responses
+### 6. Automatic Cancel & Reschedule
+- **Cancel flow:** lookup_event → delete immediately (no confirmation for single match)
+- **Reschedule flow:** lookup_event → delete_event → find_free_slots → create_event — all in ONE turn
+- Multiple matches: agent lists them, user picks, then executes without further confirmation
+- Prompt explicitly instructs: "NEVER say 'Are you sure?' — the user already told you to cancel it"
 
-### 7. Modern UI ✅
-- Clean chat interface in `app/page.tsx`
-- Gradient design with animations
+### 7. Multi-Booking (Batch)
+- Agent finds slots for ALL meetings first
+- Presents all proposed slots in a single numbered list
+- One confirmation covers all bookings
+- All `create_event` calls fire together in a single turn
+- Never books one meeting then asks "shall I book the next one?"
+- MAX_TOOL_LOOPS increased to 8 to support multi-step batch operations
+- Gap logic: "1 hour apart" = 1 hour of FREE TIME between end of one and start of next
+
+### 8. Per-User Google OAuth Authentication
+- **Login:** `/api/auth/login` → Google OAuth consent screen with calendar + email scopes
+- **Callback:** `/api/auth/callback` → token exchange, email fetch, Redis storage, HMAC cookie
+- **Middleware:** Edge-compatible (`middleware.ts`) using Web Crypto API for HMAC verification
+- **Token storage:** Upstash Redis at `auth:<userId>` with 30-day TTL
+- **Auth threading:** `AsyncLocalStorage<OAuth2Client>` via `withCalendarAuth()` — no function signature changes needed
+- **Fallback:** When `SESSION_SECRET` is not set, skips auth (backward-compatible dev mode using `.env.local` refresh token)
+- **Logout:** Clears Redis tokens + session cookie
+
+### 9. User-Configurable Working Hours
+- Settings panel in UI (gear icon) with start/end hour dropdowns
+- Persisted to `localStorage`, sent with every API request
+- Working hours threaded through all calendar utilities and conflict resolver
+- `getTimeWindowBounds` uses working hours to generate dynamic time windows
+- Default: 9 AM – 5 PM (configurable to any range)
+
+### 10. Timezone-Aware Date Computation
+- All date formatting uses `formatInTimeZone()` from `date-fns-tz` with user's browser timezone
+- Prevents UTC-vs-local date mismatch (e.g., after local midnight but before UTC midnight)
+- Voice config uses `toLocaleDateString('en-CA', { timeZone })` for timezone-correct dates
+- System prompt includes timezone-correct today/tomorrow/day-after-tomorrow references
+
+### 11. Interactive Slot Picker UI
+- Available slots rendered as clickable cards with numbered circles
+- Hover effect shows "Book" hint
+- Clicking a card sends a booking confirmation message
+- Works in both text and voice mode (voice sends via DataChannel)
+
+### 12. Event Card Display
+- Calendar events displayed as read-only cards (same visual style as slot picker)
+- Shows event name + formatted time
+- Always fetched fresh via `list_events` (never recited from memory)
+
+### 13. LLM Tool Integration
+- **Text pipeline:** 5 tools — `find_free_slots`, `create_event`, `list_events`, `lookup_event`, `delete_event`
+- **Voice pipeline:** 6 tools — adds `find_next_slot` for ASAP booking
+- Dynamic system prompt with state injection (text pipeline)
+- Inline prompt with intent recognition sections (voice pipeline)
+- Auto-search optimization saves 1 LLM round-trip when all slots are filled
+
+### 14. Performance Instrumentation
+- `[PERF]` prefixed `console.log` timers across all server-side and client-side operations
+- Covers: Redis, Calendar API, LLM calls, slot extraction, conflict resolution, voice connection, tool round-trips
+- See `ARCHITECTURE.md` for full instrumentation map
+
+### 15. Modern Chat UI
+- Gradient design with smooth animations
 - Message bubbles with user/assistant styling
-- Loading indicators
+- Slot picker cards (interactive) and event cards (read-only)
+- Voice mode indicator (speaking/listening status)
+- Loading dots animation
+- Settings panel (gear icon, working hours)
+- Auth display (user email, logout button)
 - Responsive layout
 
-## 📁 File Structure (29 files created)
-
-```
-✓ 4  API Routes
-✓ 7  Library Modules (agent/)
-✓ 4  Library Modules (calendar/)
-✓ 1  Session Store
-✓ 3  React Components
-✓ 4  Frontend Pages/Layouts
-✓ 1  Type Definitions
-✓ 2  Test Files
-✓ 1  Auth Script
-✓ 2  Config Files (package.json, tsconfig.json, etc.)
-```
-
-## 🔧 What You Need To Do
-
-### 1. Install Dependencies
-```bash
-npm install
-```
-
-### 2. Setup API Keys
-
-Create `.env.local` with:
+## Environment Variables
 
 ```bash
 # Required
 OPENAI_API_KEY=sk-...
 
-# Google Calendar (run npm run auth:google)
+# Google Calendar (OAuth2)
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
-GOOGLE_REFRESH_TOKEN=
 
-# Upstash Redis (get from upstash.com)
+# Upstash Redis (sessions + OAuth tokens)
 UPSTASH_REDIS_REST_URL=
 UPSTASH_REDIS_REST_TOKEN=
 
-# Optional
-GOOGLE_CALENDAR_ID=primary
-OPENAI_REALTIME_MODEL=gpt-4o-realtime-preview-2024-12-17
+# Per-user OAuth (production)
 NEXT_PUBLIC_APP_URL=http://localhost:3000
+SESSION_SECRET=any-random-string-for-hmac-signing
+
+# Optional (fallback for dev without OAuth flow)
+GOOGLE_REFRESH_TOKEN=
+GOOGLE_CALENDAR_ID=primary
 ```
 
-### 3. Setup Google Calendar
-
-Follow the detailed steps in `SETUP.md`, but quick version:
+## Quick Start
 
 ```bash
-# 1. Enable Google Calendar API in Google Cloud Console
-# 2. Create OAuth2 credentials
-# 3. Add credentials to .env.local
-# 4. Run auth script:
-npm run auth:google
-
-# 5. Add the output refresh token to .env.local
+npm install
+cp .env.local.example .env.local
+# Fill in API keys and Google OAuth credentials
+npm run dev           # Start at http://localhost:3000
 ```
 
-### 4. Setup Upstash Redis
+Users are redirected to Google sign-in on first visit (when `SESSION_SECRET` is set). For local dev without the OAuth flow, set `GOOGLE_REFRESH_TOKEN` in `.env.local` and leave `SESSION_SECRET` unset.
+
+## Latency Optimizations
+
+1. WebRTC Realtime API — eliminates separate STT/TTS pipeline
+2. Server VAD reduced to 800ms silence (from 1500ms)
+3. Parallel Calendar queries — `find_next_slot` queries 3 days concurrently
+4. Parallel conflict resolution — all 3 strategies + sub-queries concurrent
+5. Auto-search — pre-runs `find_free_slots` when slots are filled (saves 1 LLM round-trip)
+6. Rule-based slot extraction — <1ms, no LLM call needed
+7. Text shown immediately — not blocked by audio
+
+## Testing
 
 ```bash
-# 1. Go to upstash.com
-# 2. Create free Redis database
-# 3. Copy REST URL and token to .env.local
+npm test                    # Unit tests (state, slot-filler)
+npm run test:integration    # Calendar API integration tests (requires credentials)
 ```
-
-### 5. Run Development Server
-
-```bash
-npm run dev
-# Open http://localhost:3000
-```
-
-## 🎯 Features Demonstrated
-
-### Basic Flow
-1. User: "I need to schedule a meeting"
-2. Agent: "How long will the meeting be?"
-3. User: "30 minutes"
-4. Agent: "What day works for you?"
-5. User: "Tomorrow"
-6. Agent: "What time of day?"
-7. User: "Morning"
-8. Agent: *searches calendar* "I have 9:00 AM or 10:30 AM available"
-9. User: "9:00 AM works"
-10. Agent: *books meeting* "✓ Meeting booked!"
-
-### Advanced Scenarios
-
-**Complex Time Expression:**
-- User: "Book a meeting for the last weekday of this month"
-- Agent parses → finds last non-weekend day → searches slots
-
-**Conflict Resolution:**
-- User: "Tomorrow afternoon"
-- Agent: *no slots found* → tries full day → suggests alternatives
-
-**Mid-Conversation Changes:**
-- User: "Actually make it 1 hour instead of 30 minutes"
-- Agent: *automatically re-searches with new duration*
-
-**Relative References:**
-- User: "A day after the Project Alpha kickoff"
-- Agent: *looks up "Project Alpha kickoff" event* → adds 1 day → searches
-
-## 🧪 Testing
-
-```bash
-# Unit tests
-npm test
-
-# Integration tests (requires credentials)
-npm run test:integration
-```
-
-Test files included:
-- `__tests__/agent/state.test.ts` - State management
-- `__tests__/agent/slot-filler.test.ts` - Slot extraction
-
-## 📊 Architecture Highlights
-
-### Slot-Filling Pattern
-Explicit state machine vs. free-form LLM:
-- Predictable conversation flow
-- Clear slot tracking
-- Easy to test and debug
-
-### LLM for Complex Parsing
-Libraries fail on advanced cases:
-- "hour before my 5pm flight" ❌ Chrono.js
-- "last weekday of this month" ❌ Most parsers
-- ✅ LLM with confidence scoring
-
-### Conflict Resolution Chain
-Silent fallback before asking user:
-- Saves round-trips
-- Better UX
-- Only asks when truly stuck
-
-### Redis Session State
-Survives serverless cold starts:
-- Upstash HTTP-based
-- 2-hour TTL
-- Edge-compatible
-
-## 🚀 Deployment
-
-```bash
-vercel --prod
-```
-
-Add environment variables in Vercel dashboard.
-
-For voice (Realtime API), the WebSocket connects directly from browser to OpenAI - no server latency leg.
-
-## 📝 Documentation
-
-- `Readme.md` - Full assignment documentation
-- `SETUP.md` - Detailed setup instructions
-- `PROJECT_STRUCTURE.md` - Complete file reference
-- `IMPLEMENTATION_SUMMARY.md` - This file
-
-## ✨ Production Considerations
-
-**Already Implemented:**
-- Error handling in all API routes
-- Session TTL management
-- OAuth token refresh
-- Timezone awareness
-- Rate limiting (via Redis)
-
-**Would Add for Production:**
-- User authentication
-- Multiple calendar support
-- Recurring meeting support
-- Email notifications
-- Analytics/logging
-- More comprehensive tests
-- Error boundary components
-- Loading states
-- Offline support
-
-## 🎓 Assignment Checklist
-
-- ✅ Multi-turn conversation with slot-filling
-- ✅ Natural language time parsing
-- ✅ Google Calendar freebusy queries
-- ✅ Google Calendar event creation
-- ✅ Conflict resolution with alternatives
-- ✅ Voice interface (STT + LLM + TTS)
-- ✅ Sub-800ms latency strategy
-- ✅ Complex scenario handling
-- ✅ Clean, documented code
-- ✅ README with architecture
-- ✅ Setup instructions
-- ✅ Modern, responsive UI
-
-## 🎯 Next Steps
-
-1. `npm install`
-2. Configure `.env.local`
-3. `npm run auth:google`
-4. `npm run dev`
-5. Test the chat interface
-6. (Optional) Record demo video
-7. Submit!
-
-All code is production-ready. Just add your API keys and credentials.

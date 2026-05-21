@@ -6,45 +6,64 @@
 agenticMeetScheduler/
 ├── app/
 │   ├── api/
+│   │   ├── auth/
+│   │   │   ├── login/
+│   │   │   │   └── route.ts          # Google OAuth redirect (generates consent URL)
+│   │   │   ├── callback/
+│   │   │   │   └── route.ts          # Token exchange, email fetch, Redis store, cookie set
+│   │   │   ├── logout/
+│   │   │   │   └── route.ts          # Clear Redis tokens + session cookie
+│   │   │   └── status/
+│   │   │       └── route.ts          # Auth status check (authenticated flag + email)
 │   │   ├── chat/
-│   │   │   └── route.ts              # Main orchestration endpoint
-│   │   ├── calendar/
-│   │   │   ├── free-slots/
-│   │   │   │   └── route.ts          # Freebusy query wrapper
-│   │   │   └── create-event/
-│   │   │       └── route.ts          # Event creation wrapper
-│   │   └── voice/
-│   │       └── route.ts              # Voice session token endpoint
-│   ├── page.tsx                      # Main chat UI page
+│   │   │   └── route.ts              # Text chat orchestrator (LLM agentic loop, up to 8 iters)
+│   │   └── realtime/
+│   │       ├── session/
+│   │       │   └── route.ts          # Mints ephemeral WebRTC token via OpenAI
+│   │       └── tools/
+│   │           └── route.ts          # Executes voice tool calls
+│   ├── page.tsx                      # Main UI — text chat, WebRTC voice, settings, auth display
 │   ├── layout.tsx                    # Root layout
-│   └── globals.css                   # Global styles
+│   └── globals.css                   # Global styles (slot cards, event cards, voice UI, settings)
 │
 ├── lib/
 │   ├── agent/
-│   │   ├── state.ts                  # State management & reducers
-│   │   ├── prompt.ts                 # System prompt builder
-│   │   ├── tools.ts                  # LLM tool schemas
-│   │   ├── slot-filler.ts            # Slot extraction from messages
-│   │   ├── conflict-resolver.ts      # Alternative slot search
-│   │   └── time-parser.ts            # Natural language time parsing
+│   │   ├── state.ts                  # ConversationState management & reducers
+│   │   ├── prompt.ts                 # System prompt builder with conversation context injection
+│   │   ├── tools.ts                  # LLM tool schemas (text pipeline)
+│   │   ├── slot-filler.ts            # Rule-based slot extraction from messages
+│   │   ├── conflict-resolver.ts      # Parallel fallback slot search (3 strategies, working-hours-aware)
+│   │   └── time-parser.ts            # Time parsing utilities
+│   ├── auth/
+│   │   ├── cookie.ts                 # HMAC-signed session cookie management (Node crypto)
+│   │   ├── tokens.ts                 # Per-user OAuth token storage in Redis (30-day TTL)
+│   │   └── resolve.ts               # Resolves current user's OAuth2Client from cookie
 │   ├── calendar/
-│   │   ├── auth.ts                   # Google OAuth2 setup
-│   │   ├── freebusy.ts               # Find available slots
-│   │   ├── events.ts                 # Create/lookup events
-│   │   └── utils.ts                  # Formatting helpers
-│   └── session/
-│       └── store.ts                  # Redis session management
+│   │   ├── auth.ts                   # Google OAuth2 client creation + AsyncLocalStorage threading
+│   │   ├── freebusy.ts               # Find available time slots (gap-walking algorithm)
+│   │   ├── events.ts                 # createEvent, listEvents, deleteEvent, lookupEvent
+│   │   └── utils.ts                  # Time window bounds (working-hours-aware), slot formatting
+│   ├── session/
+│   │   └── store.ts                  # Upstash Redis session CRUD
+│   ├── debug.ts                      # Structured debug logger (DebugLogger)
+│   ├── voice-script.ts               # Rule-based voice summary fallback
+│   └── realtime/
+│       └── session-config.ts         # Realtime session config reference
+│
+├── middleware.ts                      # Edge auth middleware (HMAC cookie verification, Web Crypto API)
 │
 ├── components/
-│   ├── ChatWindow.tsx                # Message display container
-│   ├── MessageBubble.tsx             # Individual message component
-│   └── VoiceButton.tsx               # Voice input toggle
+│   ├── ChatWindow.tsx                # Message container with auto-scroll
+│   ├── MessageBubble.tsx             # Message bubble with slot cards + event cards
+│   └── VoiceButton.tsx               # Voice toggle button
 │
 ├── types/
-│   └── index.ts                      # TypeScript type definitions
+│   └── index.ts                      # TypeScript type definitions (ConversationState, WorkingHours)
 │
 ├── scripts/
-│   └── auth-google.js                # OAuth token generator
+│   ├── auth-google.js                # OAuth token generator (dev utility)
+│   ├── diagnose-calendar.js          # Calendar diagnostics
+│   └── test-api.js                   # API test script
 │
 ├── __tests__/
 │   └── agent/
@@ -59,255 +78,146 @@ agenticMeetScheduler/
 ├── package.json                      # Dependencies & scripts
 ├── tsconfig.json                     # TypeScript configuration
 ├── vercel.json                       # Vercel deployment config
-├── Readme.md                         # Assignment documentation
+├── README.md                         # Full project documentation
 ├── SETUP.md                          # Setup instructions
+├── ARCHITECTURE.md                   # Architecture & latency profile
+├── IMPLEMENTATION_SUMMARY.md         # Implementation checklist
 └── PROJECT_STRUCTURE.md              # This file
 ```
 
 ## Layer Architecture
 
-### Layer 1 — Voice I/O
-**Files:** `app/api/voice/route.ts`, `components/VoiceButton.tsx`
+### Layer 0 — Authentication
+**Files:** `middleware.ts`, `lib/auth/cookie.ts`, `lib/auth/tokens.ts`, `lib/auth/resolve.ts`, `app/api/auth/*`
 
-Handles speech-to-text and text-to-speech integration with OpenAI Realtime API.
+Per-user Google OAuth flow:
+- Edge middleware validates HMAC-signed session cookies using Web Crypto API
+- OAuth callback exchanges code for tokens, stores in Redis, sets cookie
+- `resolveCalendarAuth()` reads cookie → Redis tokens → creates OAuth2Client
+- `withCalendarAuth()` threads the client via `AsyncLocalStorage` to all calendar operations
+- Fallback: when `SESSION_SECRET` is not set, all requests pass through (dev mode)
+
+### Layer 1 — Voice I/O (WebRTC)
+**Files:** `app/api/realtime/session/route.ts`, `app/page.tsx` (voice section)
+
+Direct browser-to-OpenAI WebRTC connection via the Realtime API:
+- Ephemeral token minted server-side, WebRTC connection client-side
+- DataChannel carries session config, tool calls, and transcript events
+- Model: `gpt-realtime-mini` with Server VAD (800ms silence, 0.6 threshold)
+- Audio plays via remote track on an `<audio>` element
+- Voice prompt includes timezone-aware dates and working hours
 
 ### Layer 2 — Orchestration Backend
-**Files:** `app/api/chat/route.ts`, `lib/agent/*`, `lib/session/store.ts`
+**Files:** `app/api/chat/route.ts`, `app/api/realtime/tools/route.ts`, `lib/agent/*`, `lib/session/store.ts`
 
-Core conversation logic:
-- Maintains conversation state across turns
-- Routes user messages to appropriate actions
-- Implements slot-filling pattern
-- Runs conflict resolution when needed
+Two parallel pipelines sharing the same backend libraries:
+- **Text pipeline** (`/api/chat`): slot extraction → auto-search → LLM agentic loop (up to 8 iterations)
+- **Voice pipeline** (`/api/realtime/tools`): direct tool execution, result sent back via DataChannel
+- Both pipelines wrapped in `runWithAuth` for per-user calendar access
 
 ### Layer 3 — LLM Brain
-**Files:** `lib/agent/prompt.ts`, `lib/agent/tools.ts`, `lib/agent/time-parser.ts`
+**Files:** `lib/agent/prompt.ts`, `lib/agent/tools.ts`, `app/page.tsx` (buildSessionConfig)
 
-LLM integration:
-- Dynamic system prompt generation
-- Tool schema definitions
-- Natural language time parsing
+Two separate prompt configurations:
+- **Text:** Dynamic system prompt built from ConversationState with conversation history injection, working hours, conflict handling rules, and behavioral instructions for multi-booking/cancel/reschedule
+- **Voice:** Inline prompt in `buildSessionConfig()` with 6 tool schemas (adds `find_next_slot`), timezone-aware dates, working hours, same behavioral rules
 
 ### Layer 4 — Google Calendar Tools
 **Files:** `lib/calendar/*`
 
-Calendar API wrappers:
-- OAuth2 authentication
-- Freebusy queries
-- Event creation
-- Event lookup
+Calendar API operations (all use per-user auth via AsyncLocalStorage):
+- `findFreeSlots` — Freebusy query with gap-walking algorithm
+- `createEvent` — Insert calendar event with attendees
+- `listEvents` — List events in a date range
+- `lookupEvent` — Search events by name
+- `deleteEvent` — Delete event by ID (for reschedule/cancel)
+- `getTimeWindowBounds` — Convert "morning"/"afternoon" to UTC ISO bounds with now-clamping, respects user working hours
 
-## Key Components
+## API Routes
 
-### API Routes
+### Auth Routes
 
-#### `/api/chat` (Main Orchestration)
-- Receives user messages
-- Manages conversation state
-- Calls LLM with tools
-- Executes calendar operations
-- Returns assistant responses
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/auth/login` | GET | Redirect to Google OAuth consent screen |
+| `/api/auth/callback` | GET | Exchange code, store tokens, set cookie, redirect to app |
+| `/api/auth/logout` | POST | Delete Redis tokens, clear cookie |
+| `/api/auth/status` | GET | Return `{ authenticated, email? }` |
 
-#### `/api/calendar/free-slots`
-- Direct freebusy query endpoint
-- Takes: startTime, endTime, duration
-- Returns: array of available TimeSlots
+### Core Routes
 
-#### `/api/calendar/create-event`
-- Direct event creation endpoint
-- Takes: summary, startTime, endTime, attendees
-- Returns: created CalendarEvent
+### `POST /api/chat` (Text Chat)
+- Receives: `{ message, sessionId, timezone, workingHours }`
+- Returns: `{ message, voiceScript, sessionId, slots?, events?, state, debug }`
+- Manages full conversation lifecycle with agentic tool loop (up to 8 iterations)
 
-#### `/api/voice`
-- Returns OpenAI Realtime API session token
-- Enables voice interaction
+### `POST /api/realtime/session` (Voice Token)
+- Returns: `{ token, expires_at, sessionId }`
+- Mints ephemeral client secret via OpenAI `/v1/realtime/client_secrets`
 
-### Library Modules
+### `POST /api/realtime/tools` (Voice Tool Execution)
+- Receives: `{ toolName, args, sessionId, timezone, workingHours }`
+- Returns: `{ result, sessionId }`
+- Executes calendar tools and returns structured results for the voice model
 
-#### `lib/agent/state.ts`
-State management functions:
-- `updateSlot()` - Update individual slot
-- `addMessage()` - Add to conversation history
-- `hasAllRequiredSlots()` - Check if ready to search
-- `getNextMissingSlot()` - Determine what to ask next
-- `resetSlots()` - Clear all slots
+## Frontend Components
 
-#### `lib/agent/slot-filler.ts`
-Extracts structured data from user messages:
-- Duration parsing (minutes/hours)
-- Day parsing (today, tomorrow, ISO dates)
-- Time window parsing (morning/afternoon/evening)
-- Email address extraction
+### `app/page.tsx`
+Main application component:
+- Text chat with `/api/chat` integration
+- WebRTC voice with DataChannel event handling
+- Settings panel (working hours configuration, localStorage persistence)
+- Auth display (user email, logout button)
+- Slot picker (clickable cards → sends confirmation)
+- User transcript ordering (placeholder pattern)
+- Pending slots/events merge (prevents duplicate display)
 
-#### `lib/agent/conflict-resolver.ts`
-3-step fallback chain when no slots found:
-1. Expand time window to full day
-2. Try adjacent days (±1)
-3. Try next 3 weekdays
+### `components/MessageBubble.tsx`
+Renders messages with three modes:
+- Plain text (user/assistant messages)
+- Slot cards (clickable, numbered, with "Book" hover hint)
+- Event cards (read-only, event name + time)
 
-#### `lib/agent/time-parser.ts`
-Natural language time expression parsing:
-- Quick patterns (today, tomorrow, next week)
-- LLM-based parsing for complex expressions
-- Returns TimeExpression with confidence score
-
-#### `lib/agent/prompt.ts`
-Builds dynamic system prompt including:
-- Current conversation state
-- Collected slots
-- Available calendar results
-- Next required information
-
-#### `lib/calendar/auth.ts`
-Google Calendar authentication:
-- OAuth2 client setup
-- Service account support
-- Token refresh handling
-
-#### `lib/calendar/freebusy.ts`
-Calendar availability queries:
-- Queries Google Calendar freebusy API
-- Generates 15-minute increment slots
-- Filters by meeting duration
-
-#### `lib/calendar/events.ts`
-Event operations:
-- `createEvent()` - Insert calendar event
-- `lookupEvent()` - Search existing events
-
-#### `lib/session/store.ts`
-Redis-backed session management:
-- `getSession()` - Retrieve conversation state
-- `saveSession()` - Persist state (2hr TTL)
-- `createInitialState()` - New session factory
-
-### Frontend Components
-
-#### `app/page.tsx`
-Main chat interface:
-- Message display
-- Text input
-- Voice button
-- API communication
-
-#### `components/ChatWindow.tsx`
-Message container with:
-- Auto-scroll to latest
-- Loading indicator
-- Message list rendering
-
-#### `components/MessageBubble.tsx`
-Individual message display:
-- User/assistant styling
-- Content rendering
-
-#### `components/VoiceButton.tsx`
-Voice input control:
-- Microphone permission
-- Recording state indicator
-- Toggle voice mode
+### `components/ChatWindow.tsx`
+Container with auto-scroll and loading indicator.
 
 ## Data Flow
 
 ```
-User Input (Text/Voice)
-    ↓
-app/page.tsx
-    ↓
-POST /api/chat
-    ↓
-Load Session (Redis)
-    ↓
-Extract Slots (slot-filler.ts)
-    ↓
-Build System Prompt (prompt.ts)
-    ↓
-Call OpenAI with Tools
-    ↓
-    ├── Text Response → Return to user
-    │
-    └── Tool Call
-        ├── find_free_slots
-        │   ↓
-        │   Calendar Freebusy API
-        │   ↓
-        │   If empty → Conflict Resolver
-        │   ↓
-        │   Return slots to user
-        │
-        ├── create_event
-        │   ↓
-        │   Calendar Insert API
-        │   ↓
-        │   Return confirmation
-        │
-        └── lookup_event
-            ↓
-            Calendar Search API
-            ↓
-            Return event details
-    ↓
-Save Session (Redis)
-    ↓
-Return Response to Frontend
+Text Input                          Voice Input
+    │                                   │
+    ▼                                   ▼
+Edge Middleware                    DataChannel events
+(HMAC cookie verification)             │
+    │                                   │ speech_started → placeholder
+    ▼                                   │ transcription.completed → fill
+POST /api/chat                         │
+    │                                   │ function_call_arguments.done
+    ├── Resolve user auth (cookie→Redis)│       │
+    ├── Load session (Redis)            │       ▼
+    ├── Extract slots (regex)           │  POST /api/realtime/tools
+    ├── Auto-search (if ready)          │       │
+    ├── Build prompt (with context,     │       ├── Resolve user auth
+    │   working hours, conflict rules)  │       ├── Execute tool
+    ├── LLM + tool loop (up to 8)      │       ├── Save session
+    │   ├── find_free_slots             │       └── Return result → DC
+    │   │   └── (on 0 results:          │
+    │   │       fetch blocking events + │
+    │   │       parallel conflict       │
+    │   │       resolution)             │
+    │   ├── create_event                │
+    │   ├── list_events                 │ response.audio_transcript.done
+    │   ├── lookup_event                │       │
+    │   └── delete_event                │       ▼
+    │                                   │  Merge pendingSlots/Events
+    ├── Save session (Redis)            │  into final message
+    └── Return response                 │
+         │                              ▼
+         ▼                         Display in chat
+    Display in chat                (text + slot/event cards)
+    (text + slot/event cards)
 ```
 
-## Configuration Files
+## Performance Instrumentation
 
-### `package.json`
-Dependencies:
-- **next** - Framework
-- **openai** - LLM integration
-- **googleapis** - Calendar API
-- **date-fns** - Date manipulation
-- **@upstash/redis** - Session storage
-- **uuid** - Session ID generation
-
-Scripts:
-- `npm run dev` - Start development server
-- `npm run build` - Production build
-- `npm test` - Run unit tests
-- `npm run auth:google` - Generate refresh token
-
-### `.env.local.example`
-Required environment variables:
-- OpenAI API key
-- Google OAuth2 credentials
-- Upstash Redis credentials
-- App configuration
-
-### `tsconfig.json`
-TypeScript configuration:
-- Strict mode enabled
-- Path aliases (@/*)
-- Next.js plugin
-
-### `vercel.json`
-Deployment settings:
-- 30s function timeout
-- API route configuration
-
-## Next Steps
-
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-2. **Configure environment:**
-   ```bash
-   cp .env.local.example .env.local
-   # Fill in your API keys
-   ```
-
-3. **Setup Google Calendar:**
-   ```bash
-   npm run auth:google
-   ```
-
-4. **Run development server:**
-   ```bash
-   npm run dev
-   ```
-
-See `SETUP.md` for detailed setup instructions.
+All operations are instrumented with `[PERF]` prefixed `console.log` timers using `Date.now()` start/end pattern. See `ARCHITECTURE.md` for the full list of instrumented operations.

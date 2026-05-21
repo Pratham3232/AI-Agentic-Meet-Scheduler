@@ -4,7 +4,18 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import ChatWindow from '@/components/ChatWindow';
 
 type SlotOption = { display: string; start: string; end: string };
-type Message = { role: string; content: string; slots?: SlotOption[] };
+type EventItem = { id: string; summary: string; display: string };
+type Message = { role: string; content: string; slots?: SlotOption[]; events?: EventItem[] };
+type WorkingHours = { startHour: number; endHour: number };
+
+function loadWorkingHours(): WorkingHours {
+  if (typeof window === 'undefined') return { startHour: 9, endHour: 17 };
+  try {
+    const stored = localStorage.getItem('workingHours');
+    if (stored) return JSON.parse(stored);
+  } catch {}
+  return { startHour: 9, endHour: 17 };
+}
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
@@ -16,6 +27,24 @@ export default function Home() {
   const [isVoiceActive, setIsVoiceActive] = useState(false);
   const [isVoiceConnecting, setIsVoiceConnecting] = useState(false);
   const [isSpeaking, setIsSpeaking]   = useState(false);
+  const [workingHours, setWorkingHours] = useState<WorkingHours>(loadWorkingHours);
+  const [showSettings, setShowSettings] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem('workingHours', JSON.stringify(workingHours));
+  }, [workingHours]);
+
+  useEffect(() => {
+    fetch('/api/auth/status')
+      .then(r => r.json())
+      .then(data => {
+        if (data.authenticated) setUserEmail(data.email);
+        setAuthChecked(true);
+      })
+      .catch(() => setAuthChecked(true));
+  }, []);
 
   const pcRef          = useRef<RTCPeerConnection | null>(null);
   const dcRef          = useRef<RTCDataChannel | null>(null);
@@ -25,10 +54,13 @@ export default function Home() {
   // Streaming transcript accumulators
   const assistantTranscriptRef = useRef<string>('');
   const assistantMsgIndexRef   = useRef<number>(-1);
+  // Debounce timer for flushing buffered transcript to UI
+  const flushTimerRef          = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Index of the user placeholder pushed on speech_started; filled when transcript arrives
   const userMsgIndexRef        = useRef<number>(-1);
-  // Slot data from a tool call, merged into the model's next spoken transcript
+  // Tool result data stashed here, then merged into the model's next spoken transcript
   const pendingSlotsRef        = useRef<SlotOption[] | null>(null);
+  const pendingEventsRef       = useRef<EventItem[] | null>(null);
 
   const timezone = typeof window !== 'undefined'
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -37,6 +69,7 @@ export default function Home() {
   // ── Text chat (existing pipeline) ─────────────────────────────────────────
   const sendTextMessage = useCallback(async (text: string) => {
     if (!text.trim() || isLoading) return;
+    const tChat = Date.now();
     setMessages(prev => [...prev, { role: 'user', content: text }]);
     setInput('');
     setIsLoading(true);
@@ -45,13 +78,15 @@ export default function Home() {
       const res  = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, sessionId, timezone }),
+        body: JSON.stringify({ message: text, sessionId, timezone, workingHours }),
       });
       const data = await res.json();
+      console.log(`[PERF][client] text chat round-trip: ${Date.now() - tChat}ms`);
       if (data.error) throw new Error(data.error);
 
       const assistantMsg: Message = { role: 'assistant', content: data.message };
       if (data.slots?.length) assistantMsg.slots = data.slots;
+      if (data.events?.length) assistantMsg.events = data.events;
       setMessages(prev => [...prev, assistantMsg]);
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
     } catch (err) {
@@ -62,33 +97,36 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, sessionId, timezone]);
+  }, [isLoading, sessionId, timezone, workingHours]);
 
   // ── Handle tool calls from Realtime API ────────────────────────────────────
   const handleRealtimeToolCall = useCallback(async (callId: string, toolName: string, args: string) => {
+    const tTool = Date.now();
     console.log('[Realtime][Tool] Executing:', toolName, args);
     try {
       const parsedArgs = JSON.parse(args);
       const res = await fetch('/api/realtime/tools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toolName, args: parsedArgs, sessionId, timezone }),
+        body: JSON.stringify({ toolName, args: parsedArgs, sessionId, timezone, workingHours }),
       });
       const data = await res.json();
+      console.log(`[PERF][client] voice tool round-trip (${toolName}): ${Date.now() - tTool}ms`);
       console.log('[Realtime][Tool] Result:', JSON.stringify(data.result).slice(0, 200));
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
 
-      // Stash slot data — it will be merged into the model's spoken transcript
+      // Stash tool result data — merged into the model's next spoken transcript
       // so only ONE representation appears in chat (cards), not two.
       if ((toolName === 'find_free_slots' || toolName === 'find_next_slot') && data.result?.slots?.length) {
         pendingSlotsRef.current = data.result.slots;
+      } else if (toolName === 'list_events' && data.result?.events?.length) {
+        pendingEventsRef.current = data.result.events;
       } else if (toolName === 'create_event' && data.result?.success === false) {
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: `⚠️ ${data.result.error}`,
         }]);
       }
-      // list_events: no separate message — model's spoken response handles it
 
       const dc = dcRef.current;
       if (dc && dc.readyState === 'open') {
@@ -105,6 +143,7 @@ export default function Home() {
     } catch (err) {
       console.error('[Realtime][Tool] Error:', err);
       pendingSlotsRef.current = null;
+      pendingEventsRef.current = null;
       const dc = dcRef.current;
       if (dc && dc.readyState === 'open') {
         dc.send(JSON.stringify({
@@ -118,72 +157,151 @@ export default function Home() {
         dc.send(JSON.stringify({ type: 'response.create' }));
       }
     }
-  }, [sessionId, timezone]);
+  }, [sessionId, timezone, workingHours]);
 
   // ── Build session config for GA Realtime API ───────────────────────────────
   const buildSessionConfig = useCallback(() => {
     const now      = new Date();
-    const today    = now.toISOString().slice(0, 10);
-    const dayName  = now.toLocaleDateString('en-US', { weekday: 'long' });
+    const today    = now.toLocaleDateString('en-CA', { timeZone: timezone });
+    const dayName  = now.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
     const timeStr  = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: timezone });
+
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowDate = tomorrow.toLocaleDateString('en-CA', { timeZone: timezone });
+    const tomorrowDay  = tomorrow.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
+
+    const dayAfter = new Date(now);
+    dayAfter.setDate(dayAfter.getDate() + 2);
+    const dayAfterDate = dayAfter.toLocaleDateString('en-CA', { timeZone: timezone });
+    const dayAfterDay  = dayAfter.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
 
     return {
       type: 'realtime',
       instructions: `You are a warm, sharp voice scheduling assistant. You speak naturally, handle all calendar requests fluently, and never miss information the user already gave you.
 
-Current time: ${timeStr} on ${dayName}, ${today}. User timezone: ${timezone}. The backend enforces all time constraints — never worry about past times yourself.
+━━━ DATE REFERENCE (use these EXACT values — do NOT calculate dates yourself) ━━━
+Today: ${dayName}, ${today}
+Tomorrow: ${tomorrowDay}, ${tomorrowDate}
+Day after tomorrow: ${dayAfterDay}, ${dayAfterDate}
+Current time: ${timeStr}
+User timezone: ${timezone}
+
+━━━ USER WORKING HOURS ━━━
+The user's working hours are ${workingHours.startHour}:00 – ${workingHours.endHour}:00 in their timezone.
+ALWAYS respect these hours. Do not suggest slots outside this range.
+
+CRITICAL: When the user says "tomorrow", ALWAYS use ${tomorrowDate}. When they say "day after tomorrow", use ${dayAfterDate}. Do NOT add extra days. The backend enforces all time constraints.
+
+━━━ DURATION PARSING (EXACT — never substitute a different value) ━━━
+Convert the user's stated duration to minutes PRECISELY:
+  "15 min" / "quarter hour" → 15
+  "30 min" / "half an hour" / "quick call" / "brief" → 30
+  "45 min" → 45
+  "1 hour" / "an hour" / "one hour" / "60 min" → 60
+  "90 min" / "hour and a half" / "1.5 hours" → 90
+  "2 hours" / "two hours" → 120
+  "3 hours" / "three hours" → 180
+  "4 hours" → 240
+  "5 hours" → 300
+  "6 hours" / "six hours" → 360
+  "7 hours" → 420
+  "8 hours" → 480
+  "N hours" → N × 60 (always multiply by 60)
+NEVER change or "round" the user's duration. If they say 6 hours, the duration is 360 minutes, not 120.
 
 ━━━ INTENT RECOGNITION ━━━
 
-BOOK A MEETING — "schedule", "book", "set up", "find time", "arrange", "block time", "when am I free", etc.
-You need: duration + intent (ASAP OR a specific day/window).
+BOOK A MEETING — "schedule", "book", "set up", "find time", "arrange", "block time", etc.
+  You need: duration + intent (ASAP OR a specific day/window).
 
   ASAP — "ASAP", "as soon as possible", "soonest", "right now", "urgent", "today if possible", "next available":
     → Call find_next_slot(duration). Only ask for duration if truly missing. NEVER ask for a day or time window.
 
   SPECIFIC TIME — "tomorrow", "Monday", "next Tuesday", "this Friday afternoon", "next week morning":
-    → Resolve the day to YYYY-MM-DD. If no window stated, default timeWindow="anytime".
+    → Resolve the day to YYYY-MM-DD using the DATE REFERENCE above. If no window stated, default timeWindow="anytime".
     → Call find_free_slots(duration, day, timeWindow).
 
-  Duration clues: "30 min" / "half an hour" / "quick call" / "brief" → 30 min.
-    "an hour" / "one hour" / "60 min" → 60 min. "90 min" / "hour and a half" → 90 min. "two hours" → 120 min.
-    If duration is missing: ask exactly — "How long should the meeting be?"
+  If duration is missing: ask exactly — "How long should the meeting be?"
 
-CHECK CALENDAR — "what's on my calendar", "what do I have", "my schedule", "show my meetings", "am I free", "what's booked", etc.
-  → Call list_events with appropriate range:
-      "today" → today's full day in UTC.
-      "tomorrow" → next day.
+CHECK CALENDAR — "what's on my calendar", "what do I have", "my schedule", "show my meetings", "am I free", "what's booked", "show again", etc.
+  → You MUST call list_events every time. NEVER recite events from memory or from a previous call.
+  → Even if you just listed events 10 seconds ago, call list_events again.
+  → Use appropriate range:
+      "today" → ${today}T00:00:00Z to ${today}T23:59:59Z
+      "tomorrow" → ${tomorrowDate}T00:00:00Z to ${tomorrowDate}T23:59:59Z
       "this week" → next 7 days.
-      "next Monday" / "Friday" → that specific day.
+      "yesterday" → the day before today.
   → Report clearly: event name + time. If nothing is booked, say so warmly.
 
-RESCHEDULE / MOVE — "reschedule", "move", "change the time", "push back", "shift", etc.
-  → First identify the event: use list_events or lookup_event to find it and get its ID.
-  → Then call delete_event(eventId) to remove the old one.
-  → Then find a new slot (find_next_slot or find_free_slots) and confirm with the user.
-  → Finally call create_event to book the new time.
-  → Always confirm before deleting. Say: "I'll move your [event] from [old time] to [new time]. Sound good?"
-
 CANCEL / DELETE — "cancel", "remove", "delete", "drop", "clear", etc.
-  → Identify the event, confirm with the user, then call delete_event(eventId).
+  → Use lookup_event or list_events to find the event.
+  → If EXACTLY ONE match: call delete_event IMMEDIATELY. Do NOT ask "are you sure?" — the user already said to cancel.
+  → If MULTIPLE matches: list them, ask which one, then delete immediately once picked.
+  → Report: "Done — I've cancelled [name] on [date/time]."
+
+RESCHEDULE / MOVE — "reschedule", "move", "change the time", "push back", "shift", etc.
+  → Use lookup_event or list_events to find the event.
+  → If ONE match + user gave new time: delete_event → find_free_slots → create_event. Complete the full operation in ONE turn — ZERO confirmations needed.
+  → If ONE match but NO new time: delete the old event, then ask ONLY for the new preferred time. Once they answer, find slots and book immediately.
+  → If MULTIPLE matches: list them, ask which one, then proceed as above.
+  → NEVER say "shall I proceed?" or "are you sure?" at any step.
+
+━━━ MULTI-BOOKING (CRITICAL — batch all bookings) ━━━
+When the user asks to book MULTIPLE meetings in one request:
+  - Find slots for ALL meetings first.
+  - Present ALL proposed slots together, then ask for ONE confirmation.
+  - On confirmation, call create_event for EVERY meeting — do NOT ask per-meeting.
+  - NEVER book one then ask "shall I book the next?" — batch them all.
+
+When booking with a "gap" or "apart":
+  - "1 hour apart" = 1 hour FREE TIME between END of one and START of the next.
+  - NEVER book overlapping meetings. Verify: meeting2.start >= meeting1.end + gap.
+  - When finding slots for the second meeting, search starting AFTER (first meeting end + gap).
+
+━━━ MERGE MEETINGS ━━━
+When user says "merge", "combine", "consolidate" meetings in a time range:
+  - "Merge" means: delete the individual overlapping/adjacent meetings and create ONE event that spans from the EARLIEST start to the LATEST end of those meetings.
+  - Do NOT sum durations. The merged event simply covers the full range.
+  - If the user specified an explicit time range (e.g. "merge from 7am to 12pm"), use THOSE times as the merged event's start and end.
+  - Steps: 1) list_events to find them, 2) confirm with user, 3) delete each old event, 4) create_event with the merged range.
+  - Example: Meetings at 8–10, 9–11, 10–12 → merged = 8:00 AM – 12:00 PM (not 8AM to 3PM).
+
+━━━ SCHEDULING ARITHMETIC ━━━
+When users express scheduling constraints, think through the math:
+  - "Closing time is 5 PM" + "6 hour meeting" → meeting must start by 11 AM.
+  - "Between 9 and 12" + "2 hour meeting" → slot must start by 10 AM.
+  - Always respect user-stated work hours / closing times when filtering results.
+
+━━━ CONFLICT HANDLING (CRITICAL — never dead-end) ━━━
+When find_free_slots returns 0 slots, the tool result includes:
+  - "blockingEvents": the existing meetings filling the requested window.
+  - "conflictStrategy" / "conflictMessage": alternative slots found automatically.
+
+Your response MUST:
+1. SHOW THE BLOCKER: Tell the user what is in the way.
+   Example: "Tuesday afternoon is blocked by Team Standup (2–3 PM) and Design Review (3–4:30 PM)."
+2. OFFER THE ALTERNATIVE: If the tool returned alternative slots, present them immediately.
+   Example: "But Wednesday morning is open — here are some options:"
+3. If NO alternatives found: suggest a different day, shorter duration, or different window.
+   NEVER just say "no slots available" and stop.
 
 ━━━ CONVERSATION RULES ━━━
 
-1. Read the ENTIRE user message first. Extract every clue — duration, day, time preference, intent — before responding.
+1. ALWAYS review the full conversation before responding. Carry forward earlier details.
 2. Never ask for something the user already stated. Never ask two things at once.
-3. Once you have what you need, call the right tool immediately. Do not narrate that you are "searching" — just speak after the result arrives.
-4. After a search: present up to 3 slots as a numbered list. Say the day clearly if it's not today, then the time. Keep it brief.
-5. After listing slots: ask "Which one works for you?" — wait for explicit confirmation before booking.
-6. On confirmation: call create_event with EXACT ISO start/end times from the tool result. Never approximate or invent times.
-7. If no slots are found: say so naturally and immediately offer an alternative — different day, wider window, or different duration.
-8. Meeting title: if the user did not provide one, infer a sensible default ("Team Sync", "Quick Call", "Meeting"). Confirm it when booking.
-9. After a successful booking: confirm the event name, day, and time in one sentence. Offer to help with anything else.
-10. If the user changes their mind mid-flow, adapt gracefully — you already know everything they told you so far.
+3. Once you have what you need, call the right tool immediately.
+4. After a search: present up to 3 slots as a numbered list. Say the day clearly, then the time.
+5. After listing slots: ask "Which one works for you?" — wait for confirmation before booking.
+6. On confirmation: call create_event with EXACT ISO start/end times from the tool result.
+7. Meeting title: if user didn't provide one, default to "Meeting".
+8. After booking: confirm the event name, day, and time in one sentence.
+9. If the user changes their mind mid-flow, adapt.
 
 ━━━ VOICE STYLE ━━━
 
-Speak naturally, as if on a call — short sentences, warm tone, no filler phrases.
-For slot lists, name just the day and time (e.g. "Monday at 2 PM", "tomorrow at 10:30 AM") — skip UTC strings entirely.
+Speak naturally — short sentences, warm tone.
+For slot lists, name just the day and time (e.g. "Monday at 2 PM") — skip UTC strings.
 Never say "I'm unable to" or "I'm sorry, I can't". Redirect to what you CAN do.
 English only.`,
       tools: [
@@ -267,7 +385,7 @@ English only.`,
       ],
       tool_choice: 'auto',
     };
-  }, [timezone]);
+  }, [timezone, workingHours]);
 
   // ── Handle incoming DataChannel messages ───────────────────────────────────
   const handleDataChannelMessage = useCallback((event: any) => {
@@ -323,27 +441,54 @@ English only.`,
       }
 
       // Assistant audio transcript streaming (GA API event name)
+      // Uses sentence-level buffering: accumulate text in a ref, flush to UI
+      // only on sentence boundaries or via a 200ms debounce timer.
       case 'response.audio_transcript.delta':
       case 'response.output_audio_transcript.delta': {
         const delta = event.delta || '';
+        assistantTranscriptRef.current += delta;
+
         if (assistantMsgIndexRef.current === -1) {
-          assistantTranscriptRef.current = delta;
+          // Mark as "creation pending" synchronously to prevent rapid deltas
+          // from each creating a separate message bubble (race condition)
+          assistantMsgIndexRef.current = -2;
           setMessages(prev => {
             assistantMsgIndexRef.current = prev.length;
-            return [...prev, { role: 'assistant', content: delta }];
+            return [...prev, { role: 'assistant', content: assistantTranscriptRef.current }];
           });
-        } else {
-          assistantTranscriptRef.current += delta;
+        } else if (assistantMsgIndexRef.current >= 0) {
           const text = assistantTranscriptRef.current;
-          const idx = assistantMsgIndexRef.current;
-          setMessages(prev => {
-            const updated = [...prev];
-            if (idx < updated.length) {
-              updated[idx] = { role: 'assistant', content: text };
-            }
-            return updated;
-          });
+          const hasBoundary = /[.?!:]\s*$/.test(text) || /\n/.test(delta);
+
+          if (hasBoundary) {
+            // Sentence boundary — flush immediately
+            if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
+            const idx = assistantMsgIndexRef.current;
+            setMessages(prev => {
+              const updated = [...prev];
+              if (idx < updated.length) updated[idx] = { role: 'assistant', content: text };
+              return updated;
+            });
+          } else {
+            // No boundary yet — debounce so partial text still appears after 200ms
+            if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+            flushTimerRef.current = setTimeout(() => {
+              const t = assistantTranscriptRef.current;
+              const i = assistantMsgIndexRef.current;
+              if (i >= 0) {
+                setMessages(prev => {
+                  const updated = [...prev];
+                  if (i < updated.length) updated[i] = { role: 'assistant', content: t };
+                  return updated;
+                });
+              }
+              flushTimerRef.current = null;
+            }, 200);
+          }
         }
+        // When === -2 (creation pending), deltas accumulate in the ref;
+        // the first setMessages callback sets the real index, and the
+        // next delta will flush all accumulated text.
         setIsSpeaking(true);
         break;
       }
@@ -353,16 +498,23 @@ English only.`,
       // representation appears (model's intro text + interactive slot cards).
       case 'response.audio_transcript.done':
       case 'response.output_audio_transcript.done': {
+        if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
         const text = event.transcript?.trim();
         console.log('[Realtime][Assistant transcript done]', text?.slice(0, 100));
 
         const slots = pendingSlotsRef.current;
+        const events = pendingEventsRef.current;
         pendingSlotsRef.current = null;
+        pendingEventsRef.current = null;
+
+        const fallback = slots?.length ? 'Here are the available slots — pick one to book:'
+          : events?.length ? 'Here\'s your schedule:' : '';
 
         const msg: Message = {
           role: 'assistant',
-          content: text || (slots?.length ? 'Here are the available slots — pick one to book:' : ''),
+          content: text || fallback,
           ...(slots?.length ? { slots } : {}),
+          ...(events?.length ? { events } : {}),
         };
 
         if (text && assistantMsgIndexRef.current >= 0) {
@@ -432,10 +584,12 @@ English only.`,
     setIsVoiceConnecting(true);
 
     try {
+      const tConnect = Date.now();
+      const tToken = Date.now();
       const tokenRes = await fetch('/api/realtime/session', { method: 'POST' });
       const { token } = await tokenRes.json();
       if (!token) throw new Error('Failed to get realtime token');
-      console.log('[Realtime] Got ephemeral token');
+      console.log(`[PERF][client] token fetch: ${Date.now() - tToken}ms`);
 
       const pc = new RTCPeerConnection();
       pcRef.current = pc;
@@ -481,6 +635,7 @@ English only.`,
       await pc.setLocalDescription(offer);
       console.log('[Realtime] SDP offer created');
 
+      const tSdp = Date.now();
       const sdpRes = await fetch('https://api.openai.com/v1/realtime/calls', {
         method: 'POST',
         headers: {
@@ -497,6 +652,8 @@ English only.`,
 
       const answerSdp = await sdpRes.text();
       await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      console.log(`[PERF][client] SDP exchange: ${Date.now() - tSdp}ms`);
+      console.log(`[PERF][client] voice connection total: ${Date.now() - tConnect}ms`);
       console.log('[Realtime] WebRTC connected successfully');
 
       setIsVoiceActive(true);
@@ -532,8 +689,10 @@ English only.`,
     setIsSpeaking(false);
     assistantTranscriptRef.current = '';
     assistantMsgIndexRef.current = -1;
+    if (flushTimerRef.current) { clearTimeout(flushTimerRef.current); flushTimerRef.current = null; }
     userMsgIndexRef.current = -1;
     pendingSlotsRef.current = null;
+    pendingEventsRef.current = null;
   }, []);
 
   const toggleVoice = useCallback(() => {
@@ -576,9 +735,58 @@ English only.`,
     <div className="container">
       <div className="chat-window">
         <div className="chat-header">
-          Smart Scheduler AI
-          {isVoiceActive && <span className="speaking-indicator"> {isSpeaking ? '🔊' : '🎙️'}</span>}
+          <span>Smart Scheduler AI</span>
+          <div className="header-controls">
+            {userEmail && <span className="user-email">{userEmail}</span>}
+            {isVoiceActive && <span className="speaking-indicator">{isSpeaking ? '🔊' : '🎙️'}</span>}
+            <button
+              className="settings-toggle"
+              onClick={() => setShowSettings(s => !s)}
+              title="Working hours settings"
+            >
+              ⚙
+            </button>
+            {userEmail && (
+              <button
+                className="settings-toggle"
+                onClick={async () => {
+                  await fetch('/api/auth/logout', { method: 'POST' });
+                  window.location.href = '/api/auth/login';
+                }}
+                title="Sign out"
+              >
+                ↪
+              </button>
+            )}
+          </div>
         </div>
+
+        {showSettings && (
+          <div className="settings-panel">
+            <label className="settings-label">Working Hours</label>
+            <div className="settings-row">
+              <select
+                className="settings-select"
+                value={workingHours.startHour}
+                onChange={e => setWorkingHours(wh => ({ ...wh, startHour: Number(e.target.value) }))}
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i}>{String(i).padStart(2, '0')}:00</option>
+                ))}
+              </select>
+              <span className="settings-separator">to</span>
+              <select
+                className="settings-select"
+                value={workingHours.endHour}
+                onChange={e => setWorkingHours(wh => ({ ...wh, endHour: Number(e.target.value) }))}
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i}>{String(i).padStart(2, '0')}:00</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
 
         <ChatWindow messages={messages} isLoading={isLoading} onSlotPick={handleSlotPick} />
 

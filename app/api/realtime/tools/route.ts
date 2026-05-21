@@ -8,6 +8,8 @@ import { DebugLogger } from '@/lib/debug';
 import { v4 as uuidv4 } from 'uuid';
 import { addDays, format } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
+import { withCalendarAuth } from '@/lib/calendar/auth';
+import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
 /**
  * POST /api/realtime/tools
@@ -15,11 +17,18 @@ import { formatInTimeZone } from 'date-fns-tz';
  * All time validation happens HERE so the LLM doesn't need to reason about it.
  */
 export async function POST(req: NextRequest) {
+  const t0 = Date.now();
   const debug = new DebugLogger();
 
   try {
-    const { toolName, args, sessionId: providedSessionId, timezone = 'UTC' } = await req.json();
+    const { toolName, args, sessionId: providedSessionId, timezone = 'UTC', workingHours } = await req.json();
     const now = new Date();
+
+    const userAuth = await resolveCalendarAuth();
+    const runWithAuth = <T>(fn: () => Promise<T>) =>
+      userAuth ? withCalendarAuth(userAuth, fn) : fn();
+
+    return await runWithAuth(async () => {
 
     const sessionId = providedSessionId || uuidv4();
     let state = (await getSession(sessionId)) ?? createInitialState(sessionId);
@@ -27,6 +36,7 @@ export async function POST(req: NextRequest) {
     debug.log({ type: 'tool_call', tool: toolName, args });
 
     let result: Record<string, any> = {};
+    const tTool = Date.now();
 
     if (toolName === 'find_next_slot') {
       // ASAP booking: find the soonest available slot starting from NOW
@@ -41,7 +51,7 @@ export async function POST(req: NextRequest) {
       ];
       const allResults = await Promise.all(
         dayStrs.map(d => {
-          const bounds = getTimeWindowBounds(d, 'anytime', timezone, now);
+          const bounds = getTimeWindowBounds(d, 'anytime', timezone, now, workingHours);
           return findFreeSlots(bounds.start, bounds.end, duration, undefined, debug)
             .then(found => found.filter(s => new Date(s.start) >= now));
         })
@@ -72,13 +82,23 @@ export async function POST(req: NextRequest) {
 
     } else if (toolName === 'find_free_slots') {
       const { duration, day, timeWindow } = args;
-      const bounds = getTimeWindowBounds(day, timeWindow, timezone, now);
+      const bounds = getTimeWindowBounds(day, timeWindow, timezone, now, workingHours);
 
       let slots = (await findFreeSlots(bounds.start, bounds.end, duration, undefined, debug))
         .filter(s => new Date(s.start) >= now);
 
       if (slots.length === 0) {
-        const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone);
+        const existingEvents = await listEvents(bounds.start, bounds.end, undefined, debug);
+        result.blockingEvents = existingEvents
+          .filter(e => e.start?.dateTime && e.end?.dateTime)
+          .map(e => ({
+            summary: e.summary ?? '(no title)',
+            start: e.start.dateTime,
+            end: e.end.dateTime,
+            display: formatTimeSlot({ start: e.start.dateTime!, end: e.end.dateTime! }, timezone),
+          }));
+
+        const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
         slots = conflict.slots.filter(s => new Date(s.start) >= now);
         result.conflictStrategy = conflict.strategy;
         result.conflictMessage = conflict.message;
@@ -133,6 +153,9 @@ export async function POST(req: NextRequest) {
           summary: e.summary ?? '(no title)',
           start: e.start?.dateTime,
           end: e.end?.dateTime,
+          display: e.start?.dateTime && e.end?.dateTime
+            ? formatTimeSlot({ start: e.start.dateTime, end: e.end.dateTime }, timezone)
+            : 'All day',
         })),
       };
 
@@ -156,11 +179,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Unknown tool: ${toolName}` }, { status: 400 });
     }
 
+    console.log(`[PERF][realtime/tools] tool=${toolName}: ${Date.now() - tTool}ms`);
+
     await saveSession(state);
+    console.log(`[PERF][realtime/tools] total (${toolName}): ${Date.now() - t0}ms`);
     return NextResponse.json({ result, sessionId });
+
+    }); // end runWithAuth
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[realtime/tools] error:', msg);
+    console.log(`[PERF][realtime/tools] total (error): ${Date.now() - t0}ms`);
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }

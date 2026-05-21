@@ -1,4 +1,4 @@
-import { TimeSlot } from '@/types';
+import { TimeSlot, WorkingHours } from '@/types';
 import { parseISO, addMinutes, addDays } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
@@ -19,30 +19,39 @@ export function formatSlotList(slots: TimeSlot[], timezone: string = 'UTC'): str
     .join('\n');
 }
 
-const TIME_WINDOWS: Record<string, { startHour: number; endHour: number }> = {
+const DEFAULT_TIME_WINDOWS: Record<string, { startHour: number; endHour: number }> = {
   morning:   { startHour: 8,  endHour: 12 },
   afternoon: { startHour: 12, endHour: 17 },
   evening:   { startHour: 17, endHour: 22 },
-  anytime:   { startHour: 8,  endHour: 22 }, // extends to 10 PM
+  anytime:   { startHour: 8,  endHour: 22 },
 };
 
-/**
- * Returns UTC ISO bounds for a named time window on a given day.
- * If the window start is already in the past, the start is clamped to
- * the next clean 30-min boundary from now so only future slots are returned.
- *
- * @param day      "YYYY-MM-DD" — the date in the user's local timezone
- * @param window   one of morning | afternoon | evening | anytime
- * @param timezone IANA timezone string, e.g. "Asia/Kolkata"
- * @param now      override for "current time" (defaults to new Date())
- */
+function buildTimeWindows(wh?: WorkingHours): Record<string, { startHour: number; endHour: number }> {
+  if (!wh) return DEFAULT_TIME_WINDOWS;
+  const midpoint = Math.floor((wh.startHour + wh.endHour) / 2);
+  const computed: Record<string, { startHour: number; endHour: number }> = {
+    morning:   { startHour: wh.startHour, endHour: midpoint },
+    afternoon: { startHour: midpoint,      endHour: Math.min(wh.endHour, 17) },
+    evening:   { startHour: Math.max(midpoint, 17), endHour: wh.endHour },
+    anytime:   { startHour: wh.startHour, endHour: wh.endHour },
+  };
+  for (const key of Object.keys(computed)) {
+    if (computed[key].startHour >= computed[key].endHour) {
+      computed[key] = DEFAULT_TIME_WINDOWS[key];
+    }
+  }
+  return computed;
+}
+
 export function getTimeWindowBounds(
   day: string,
   window: string,
   timezone: string = 'UTC',
-  now: Date = new Date()
+  now: Date = new Date(),
+  workingHours?: WorkingHours
 ): { start: string; end: string } {
-  const bounds = TIME_WINDOWS[window.toLowerCase()] ?? TIME_WINDOWS.anytime;
+  const windows = buildTimeWindows(workingHours);
+  const bounds = windows[window.toLowerCase()] ?? windows.anytime;
 
   const startZoned = `${day}T${String(bounds.startHour).padStart(2, '0')}:00:00`;
   const endZoned   = `${day}T${String(bounds.endHour).padStart(2, '0')}:00:00`;
@@ -65,7 +74,13 @@ export function getTimeWindowBounds(
     const nextDayStr = nextDay.toISOString().slice(0, 10);
     const nextStart = fromZonedTime(`${nextDayStr}T${String(bounds.startHour).padStart(2, '0')}:00:00`, timezone);
     const nextEnd   = fromZonedTime(`${nextDayStr}T${String(bounds.endHour).padStart(2, '0')}:00:00`, timezone);
-    return { start: nextStart.toISOString(), end: nextEnd.toISOString() };
+    if (nextStart < nextEnd) {
+      return { start: nextStart.toISOString(), end: nextEnd.toISOString() };
+    }
+    const fallback = DEFAULT_TIME_WINDOWS[window.toLowerCase()] ?? DEFAULT_TIME_WINDOWS.anytime;
+    const fbStart = fromZonedTime(`${nextDayStr}T${String(fallback.startHour).padStart(2, '0')}:00:00`, timezone);
+    const fbEnd   = fromZonedTime(`${nextDayStr}T${String(fallback.endHour).padStart(2, '0')}:00:00`, timezone);
+    return { start: fbStart.toISOString(), end: fbEnd.toISOString() };
   }
 
   return {
