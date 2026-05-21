@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, saveSession, createInitialState } from '@/lib/session/store';
-import { findFreeSlots } from '@/lib/calendar/freebusy';
+import { findFreeSlots } from '@/lib/calendar/slot-search';
 import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
 import { getTimeWindowBounds, formatTimeSlot } from '@/lib/calendar/utils';
-import { resolveConflict } from '@/lib/agent/conflict-resolver';
+import { executeFindFreeSlots } from '@/lib/agent/find-slots';
+import { planMultiDayBookings } from '@/lib/agent/multi-booking';
+import { isSlotFree, filterFutureSlots } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { v4 as uuidv4 } from 'uuid';
 import { addDays, format } from 'date-fns';
@@ -41,25 +43,22 @@ export async function POST(req: NextRequest) {
     const tTool = Date.now();
 
     if (toolName === 'find_next_slot') {
-      // ASAP booking: find the soonest available slot starting from NOW
       const { duration } = args;
       const today = formatInTimeZone(now, timezone, 'yyyy-MM-dd');
 
-      // Query up to 3 days in parallel to minimise latency
       const dayStrs = [
         today,
-        format(addDays(now, 1), 'yyyy-MM-dd'),
-        format(addDays(now, 2), 'yyyy-MM-dd'),
+        formatInTimeZone(addDays(now, 1), timezone, 'yyyy-MM-dd'),
+        formatInTimeZone(addDays(now, 2), timezone, 'yyyy-MM-dd'),
       ];
       const allResults = await Promise.all(
         dayStrs.map(d => {
           const bounds = getTimeWindowBounds(d, 'anytime', timezone, now, workingHours);
           return findFreeSlots(bounds.start, bounds.end, duration, undefined, debug)
-            .then(found => found.filter(s => new Date(s.start) >= now));
+            .then(found => filterFutureSlots(found, now));
         })
       );
 
-      // Pick the earliest day with available slots (preserve day ordering)
       let slots: any[] = [];
       for (const found of allResults) {
         if (found.length > 0) { slots = found; break; }
@@ -83,66 +82,104 @@ export async function POST(req: NextRequest) {
       }
 
     } else if (toolName === 'find_free_slots') {
-      const { duration, day, timeWindow } = args;
-      const bounds = getTimeWindowBounds(day, timeWindow, timezone, now, workingHours);
+      const {
+        duration,
+        day,
+        timeWindow,
+        preferredStartTime,
+        preferredEndTime,
+      } = args;
 
-      let slots = (await findFreeSlots(bounds.start, bounds.end, duration, undefined, debug))
-        .filter(s => new Date(s.start) >= now);
+      const searchResult = await executeFindFreeSlots(
+        {
+          duration,
+          day,
+          timeWindow,
+          preferredStartTime,
+          preferredEndTime,
+        },
+        timezone,
+        debug,
+        workingHours,
+        now
+      );
 
-      if (slots.length === 0) {
-        const existingEvents = await listEvents(bounds.start, bounds.end, undefined, debug);
-        result.blockingEvents = existingEvents
-          .filter(e => e.start?.dateTime && e.end?.dateTime)
-          .map(e => ({
-            summary: e.summary ?? '(no title)',
-            start: e.start.dateTime,
-            end: e.end.dateTime,
-            display: formatTimeSlot({ start: e.start.dateTime!, end: e.end.dateTime! }, timezone),
-          }));
+      state.slots = {
+        ...state.slots,
+        duration,
+        day,
+        timeWindow,
+        preferredStart: preferredStartTime ?? state.slots.preferredStart,
+        preferredEnd: preferredEndTime ?? state.slots.preferredEnd,
+      };
+      state.calendarResults = searchResult.slots;
+      state.lastSearchParams = searchResult.searchParams;
+      state.awaitingConfirmation =
+        searchResult.slotsFound > 0 || searchResult.requestedSlot?.available === true;
 
-        const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
-        slots = conflict.slots.filter(s => new Date(s.start) >= now);
-        result.conflictStrategy = conflict.strategy;
-        result.conflictMessage = conflict.message;
-      }
+      result = {
+        slotsFound: searchResult.slotsFound,
+        slots: searchResult.slots.map(s => ({
+          start: s.start,
+          end: s.end,
+          display: formatTimeSlot(s, timezone),
+        })),
+        conflictStrategy: searchResult.conflictStrategy,
+        conflictMessage: searchResult.conflictMessage,
+        hint: searchResult.hint,
+      };
+      if (searchResult.blockingEvents) result.blockingEvents = searchResult.blockingEvents;
+      if (searchResult.requestedSlot) result.requestedSlot = searchResult.requestedSlot;
 
-      state.slots = { ...state.slots, duration, day, timeWindow };
-      state.calendarResults = slots;
-      state.lastSearchParams = { duration, day, timeWindow };
-      state.awaitingConfirmation = slots.length > 0;
-
-      result.slotsFound = slots.length;
-      result.slots = slots.slice(0, 5).map(s => ({
-        start: s.start,
-        end: s.end,
-        display: formatTimeSlot(s, timezone),
-      }));
+    } else if (toolName === 'plan_multi_day_bookings') {
+      const { durationMinutes, days, preferredTime } = args;
+      const plan = await planMultiDayBookings(
+        { durationMinutes, days, preferredTime, timezone, workingHours },
+        debug,
+        now
+      );
+      result = {
+        ...plan,
+        hint:
+          plan.conflicts.length === 0
+            ? 'All days available. Confirm once, then create_event for every autoBookable entry now. Never promise to notify later.'
+            : 'Show ONLY conflict days. Do not list autoBookable days.',
+      };
+      state.awaitingConfirmation = true;
 
     } else if (toolName === 'create_event') {
       const { summary, startTime, endTime, attendees = [], description } = args;
 
-      // VALIDATION: Reject booking in the past
       const eventStart = new Date(startTime);
       if (eventStart < now) {
         result = {
           success: false,
           error: 'Cannot book a meeting in the past.',
           currentTime: formatInTimeZone(now, timezone, 'h:mm a'),
-          hint: 'The requested time has already passed. Use find_next_slot to get the soonest available slot.',
+          hint: 'Use find_next_slot to get the soonest available slot.',
         };
       } else {
-        const event = await createEvent(summary, startTime, endTime, attendees, description);
-        state.awaitingConfirmation = false;
-        state.calendarResults = [];
-        state.lastSearchParams = null;
-        result = {
-          success: true,
-          eventId: event.id,
-          summary: event.summary,
-          start: event.start.dateTime,
-          end: event.end.dateTime,
-          displayTime: formatTimeSlot({ start: event.start.dateTime || '', end: event.end.dateTime || '' }, timezone),
-        };
+        const free = await isSlotFree(startTime, endTime);
+        if (!free) {
+          result = {
+            success: false,
+            error: 'That time conflicts with an existing event.',
+            hint: 'Call find_free_slots with preferredStartTime for nearest alternatives.',
+          };
+        } else {
+          const event = await createEvent(summary, startTime, endTime, attendees, description);
+          state.awaitingConfirmation = false;
+          state.calendarResults = [];
+          state.lastSearchParams = null;
+          result = {
+            success: true,
+            eventId: event.id,
+            summary: event.summary,
+            start: event.start.dateTime,
+            end: event.end.dateTime,
+            displayTime: formatTimeSlot({ start: event.start.dateTime || '', end: event.end.dateTime || '' }, timezone),
+          };
+        }
       }
 
     } else if (toolName === 'list_events') {
@@ -187,7 +224,7 @@ export async function POST(req: NextRequest) {
     console.log(`[PERF][realtime/tools] total (${toolName}): ${Date.now() - t0}ms`);
     return NextResponse.json({ result, sessionId });
 
-    }); // end runWithAuth
+    });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('[realtime/tools] error:', msg);

@@ -84,6 +84,8 @@ export function resetSlots(state: ConversationState): ConversationState {
       duration: null,
       day: null,
       timeWindow: null,
+      preferredStart: null,
+      preferredEnd: null,
       attendees: [],
     },
     calendarResults: [],

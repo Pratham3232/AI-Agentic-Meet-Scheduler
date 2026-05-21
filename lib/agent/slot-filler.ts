@@ -64,6 +64,16 @@ export function extractAndUpdateSlots(
     changes.push(`timeWindow: ${state.slots.timeWindow ?? 'null'} → ${newTimeWindow}`);
   }
 
+  const preferred = extractPreferredTimes(message);
+  if (preferred.start !== null && preferred.start !== state.slots.preferredStart) {
+    updated = updateSlot(updated, 'preferredStart', preferred.start);
+    changes.push(`preferredStart: → ${preferred.start}`);
+  }
+  if (preferred.end !== null && preferred.end !== state.slots.preferredEnd) {
+    updated = updateSlot(updated, 'preferredEnd', preferred.end);
+    changes.push(`preferredEnd: → ${preferred.end}`);
+  }
+
   const newAttendees = extractAttendees(message).filter(a => !state.slots.attendees.includes(a));
   if (newAttendees.length > 0) {
     updated = updateSlot(updated, 'attendees', [...updated.slots.attendees, ...newAttendees]);
@@ -71,7 +81,11 @@ export function extractAndUpdateSlots(
   }
 
   const keyChanged = changes.some(c =>
-    c.startsWith('duration:') || c.startsWith('day:') || c.startsWith('timeWindow:')
+    c.startsWith('duration:') ||
+    c.startsWith('day:') ||
+    c.startsWith('timeWindow:') ||
+    c.startsWith('preferredStart:') ||
+    c.startsWith('preferredEnd:')
   );
   if (keyChanged && (state.calendarResults.length > 0 || state.awaitingConfirmation)) {
     updated = { ...updated, calendarResults: [], awaitingConfirmation: false, lastSearchParams: null };
@@ -202,6 +216,72 @@ function extractTimeWindow(message: string): string | null {
     if (hour >= 5  && hour < 12) return 'morning';
     if (hour >= 12 && hour < 17) return 'afternoon';
     if (hour >= 17)               return 'evening';
+  }
+
+  return null;
+}
+
+/** Explicit clock times for requested-slot checks (not just morning/afternoon). */
+function extractPreferredTimes(message: string): { start: string | null; end: string | null } {
+  const lower = message.toLowerCase();
+
+  const rangeMatch = lower.match(
+    /\b(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i
+  );
+  if (rangeMatch) {
+    const start = formatClockToken(rangeMatch[1], rangeMatch[2], rangeMatch[3]);
+    const end = formatClockToken(rangeMatch[4], rangeMatch[5], rangeMatch[6]);
+    return { start, end };
+  }
+
+  const atMatch = lower.match(/\b(?:at\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  if (atMatch) {
+    return { start: formatClockToken(atMatch[1], atMatch[2], atMatch[3]), end: null };
+  }
+
+  const bareTime = lower.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
+  if (bareTime && !/\b(morning|afternoon|evening)\b/.test(lower)) {
+    return { start: formatClockToken(bareTime[1], bareTime[2], bareTime[3]), end: null };
+  }
+
+  return { start: null, end: null };
+}
+
+function formatClockToken(h: string, m: string | undefined, ampm: string | undefined): string {
+  let hour = parseInt(h, 10);
+  const minute = m ? parseInt(m, 10) : 0;
+  if (ampm) {
+    const mer = ampm.toLowerCase();
+    if (mer === 'pm' && hour < 12) hour += 12;
+    if (mer === 'am' && hour === 12) hour = 0;
+  }
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+/** Expand "Mon–Fri", "every day this week", "next N days" into ISO date strings. */
+export function extractBookingDays(message: string, today: Date = new Date()): string[] | null {
+  const lower = message.toLowerCase();
+
+  const nextNDays = lower.match(/\b(?:next|for)\s+(\d+)\s+days?\b/);
+  if (nextNDays) {
+    const n = Math.min(parseInt(nextNDays[1], 10), 14);
+    return Array.from({ length: n }, (_, i) => format(addDays(today, i + 1), 'yyyy-MM-dd'));
+  }
+
+  if (/\bevery\s+day\b|\bdaily\b|\beach\s+day\b/.test(lower)) {
+    const n = 5;
+    return Array.from({ length: n }, (_, i) => format(addDays(today, i), 'yyyy-MM-dd'));
+  }
+
+  if (/\bmonday\s*(?:through|to|-)\s*friday\b|\bmon\s*[-–]\s*fri\b/i.test(lower)) {
+    const days: string[] = [];
+    const dow = today.getDay();
+    let monday = addDays(today, dow === 0 ? 1 : dow === 1 ? 0 : (8 - dow) % 7);
+    if (dow > 1 && dow < 6) monday = addDays(today, -(dow - 1));
+    for (let i = 0; i < 5; i++) {
+      days.push(format(addDays(monday, i), 'yyyy-MM-dd'));
+    }
+    return days;
   }
 
   return null;

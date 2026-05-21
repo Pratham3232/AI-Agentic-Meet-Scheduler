@@ -5,7 +5,8 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
     type: 'function' as const,
     function: {
       name: 'find_free_slots',
-      description: "Query the user's calendar for available slots in a given time window",
+      description:
+        "Query the user's calendar for available slots. When the user names a specific time (e.g. 'at 10 AM', '9 to 11'), pass preferredStartTime/preferredEndTime so the tool checks that exact slot and returns blockers plus proximity-ranked alternatives.",
       parameters: {
         type: 'object',
         properties: {
@@ -14,10 +15,43 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
           timeWindow: {
             type: 'string',
             enum: ['morning', 'afternoon', 'evening', 'anytime'],
-            description: 'morning=8-12, afternoon=12-17, evening=17-21, anytime=8-18',
+            description: 'Broad search window when no exact time is given',
+          },
+          preferredStartTime: {
+            type: 'string',
+            description: 'Exact requested start: "10:00", "10 AM", or ISO UTC. Use when user names a specific time.',
+          },
+          preferredEndTime: {
+            type: 'string',
+            description: 'End of requested range if user said "9 to 11" (e.g. "11:00" or "11 AM")',
           },
         },
         required: ['duration', 'day', 'timeWindow'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'plan_multi_day_bookings',
+      description:
+        'Plan bookings across multiple days at the same local time. Returns which days can auto-book vs which need user picks (one alternative per conflict day). Use for "book every day this week at 10", "Mon–Fri for 1 hour at 2pm", etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          durationMinutes: { type: 'number', description: 'Meeting duration in minutes' },
+          days: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'ISO dates YYYY-MM-DD, one per day to book',
+          },
+          preferredTime: {
+            type: 'string',
+            description: 'Local time on each day, e.g. "10:00" or "10 AM"',
+          },
+        },
+        required: ['durationMinutes', 'days', 'preferredTime'],
         additionalProperties: false,
       },
     },

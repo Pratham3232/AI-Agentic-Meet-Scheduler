@@ -1,6 +1,6 @@
 import { SearchParams, TimeSlot, WorkingHours } from '@/types';
 import { addDays, subDays, format, parseISO, startOfDay, endOfDay } from 'date-fns';
-import { findFreeSlots } from '../calendar/freebusy';
+import { findFreeSlots } from '../calendar/slot-search';
 import { getTimeWindowBounds } from '../calendar/utils';
 import { DebugLogger } from '../debug';
 
@@ -52,8 +52,8 @@ async function expandTimeWindow(
   workingHours?: WorkingHours
 ): Promise<{ slots: TimeSlot[]; strategy: string; message: string }> {
   const date = parseISO(params.day);
-  const startH = workingHours?.startHour ?? 8;
-  const endH   = workingHours?.endHour ?? 18;
+  const startH = workingHours?.startHour ?? 9;
+  const endH   = workingHours?.endHour ?? 17;
   const start = fromZonedDay(params.day, startH, timezone);
   const end   = fromZonedDay(params.day, endH, timezone);
 
@@ -119,8 +119,8 @@ async function tryNextWeekdays(
     if (dow !== 0 && dow !== 6) candidates.push(candidate);
   }
 
-  const startH = workingHours?.startHour ?? 8;
-  const endH   = workingHours?.endHour ?? 18;
+  const startH = workingHours?.startHour ?? 9;
+  const endH   = workingHours?.endHour ?? 17;
   const results = await Promise.all(
     candidates.map(targetDate => {
       const day = format(targetDate, 'yyyy-MM-dd');

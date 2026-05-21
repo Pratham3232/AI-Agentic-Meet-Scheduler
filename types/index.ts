@@ -15,6 +15,8 @@ export interface ConversationState {
     duration: number | null;       // minutes
     day: string | null;            // ISO date string
     timeWindow: string | null;     // "morning" | "afternoon" | "evening" | ISO range
+    preferredStart: string | null; // e.g. "10:00" or ISO
+    preferredEnd: string | null;
     attendees: string[];
   };
   calendarResults: TimeSlot[];
@@ -29,6 +31,8 @@ export interface SearchParams {
   duration: number;
   day: string;
   timeWindow: string;
+  preferredStartTime?: string;
+  preferredEndTime?: string;
   attendees?: string[];
 }
 

@@ -51,6 +51,8 @@ export function createInitialState(sessionId: string): ConversationState {
       duration: null,
       day: null,
       timeWindow: null,
+      preferredStart: null,
+      preferredEnd: null,
       attendees: [],
     },
     calendarResults: [],

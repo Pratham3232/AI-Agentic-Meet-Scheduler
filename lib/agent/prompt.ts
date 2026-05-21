@@ -1,6 +1,13 @@
 import { ConversationState, WorkingHours } from '@/types';
 import { formatInTimeZone } from 'date-fns-tz';
 import { formatTimeSlot } from '../calendar/utils';
+import {
+  CONFLICT_HANDLING_RULES,
+  PROXIMITY_SLOT_RULES,
+  MULTI_DAY_BOOKING_RULES,
+  MULTI_BOOKING_GAP_RULES,
+  ASYNC_PROMISE_BAN,
+} from './prompt-shared';
 
 function buildConversationContext(state: ConversationState): string {
   const history = state.conversationHistory;
@@ -52,6 +59,7 @@ export function buildSystemPrompt(
     `- Duration : ${state.slots.duration != null ? `${state.slots.duration} min` : 'MISSING'}`,
     `- Day      : ${state.slots.day ?? 'MISSING'}`,
     `- Window   : ${state.slots.timeWindow ?? 'MISSING'}`,
+    `- Preferred: ${state.slots.preferredStart ?? 'none'}${state.slots.preferredEnd ? ` – ${state.slots.preferredEnd}` : ''}`,
     `- Attendees: ${state.slots.attendees.length > 0 ? state.slots.attendees.join(', ') : 'none'}`,
   ].join('\n');
 
@@ -118,27 +126,9 @@ and resume it when the tangent is resolved.
 8. Keep replies short and conversational.
 ${isStale ? `9. STALE SEARCH: user changed a requirement. You MUST call find_free_slots with updated params before presenting ANY slots.` : ''}
 
-## Conflict Handling (CRITICAL — never dead-end)
-When find_free_slots returns 0 slots, the tool result will include:
-  - "blockingEvents": the existing meetings that fill the requested window.
-  - "conflictStrategy" / "conflictMessage": alternative slots the system found automatically.
-  - "slots": the alternative slots (if any were found by the fallback strategies).
+${CONFLICT_HANDLING_RULES}
 
-Your response MUST follow this pattern:
-
-1. **Show the blocker**: Tell the user exactly WHAT is in the way.
-   Example: "Tuesday afternoon is blocked by 'Team Standup' (2–3 PM) and 'Design Review' (3–4:30 PM)."
-
-2. **Offer the alternative**: If the tool returned alternative slots, present them immediately.
-   Example: "But Wednesday morning is open — here are some options:"
-   Then list the alternative slots as a numbered list.
-
-3. **If NO alternatives were found either**: Suggest concrete next steps — a different day,
-   a shorter duration, or a different time window. NEVER just say "no slots available" and stop.
-   Example: "Your whole week looks packed in the afternoons. Want me to check mornings instead, or try next week?"
-
-NEVER respond with just "I couldn't find a slot" or "that time is unavailable" without explaining
-WHY (the blocking events) and WHAT to do next (alternatives or a question to narrow the search).
+${PROXIMITY_SLOT_RULES}
 
 ## Cancel / Delete (execute automatically)
 When the user asks to cancel or delete a meeting:
@@ -166,20 +156,13 @@ When the user asks to reschedule or move a meeting:
     lookup_event → delete_event → find_free_slots → create_event → report done.
     All in ONE turn. Do NOT stop to ask "shall I proceed?" at any step.
 
-## Multi-Booking (CRITICAL — batch all bookings together)
-When the user asks to book MULTIPLE meetings in one request (e.g., "book 3 meetings", "schedule two calls"):
-  - Find slots for ALL meetings first (call find_free_slots as needed).
-  - Present ALL proposed slots together in a single numbered list.
-  - Ask for ONE confirmation covering ALL the meetings.
-  - On confirmation, call create_event for EVERY meeting in a single turn — do NOT wait for
-    per-meeting confirmation. Issue all create_event calls together.
-  - NEVER book one meeting then ask "shall I book the next one?" — that is a bad experience.
+${MULTI_DAY_BOOKING_RULES}
 
-## Multi-Booking / Gap Logic
-When booking MULTIPLE meetings with a "gap" or "apart":
-  - "1 hour apart" = 1 hour of FREE TIME between the END of one meeting and START of the next.
-  - NEVER book overlapping meetings. Verify: meeting2.start >= meeting1.end + gap.
-  - Example: two 2-hour meetings, 1 hour gap → 8:00-10:00 then 11:00-1:00 (NOT 8-10 and 9-11).
+For multiple meetings on the SAME day (not multi-day): find slots for ALL first, one confirmation, all create_event in one turn.
+
+${MULTI_BOOKING_GAP_RULES}
+
+${ASYNC_PROMISE_BAN}
 
 ## Merge Meetings
 When user says "merge" / "combine" / "consolidate" meetings:

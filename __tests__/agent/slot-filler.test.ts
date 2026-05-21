@@ -1,4 +1,4 @@
-import { extractAndUpdateSlots } from '@/lib/agent/slot-filler';
+import { extractAndUpdateSlots, extractBookingDays } from '@/lib/agent/slot-filler';
 import { DebugLogger } from '@/lib/debug';
 import { ConversationState } from '@/types';
 import { format, addDays } from 'date-fns';
@@ -8,7 +8,14 @@ const debug = () => new DebugLogger();
 
 const blank: ConversationState = {
   sessionId: 'test',
-  slots: { duration: null, day: null, timeWindow: null, attendees: [] },
+  slots: {
+    duration: null,
+    day: null,
+    timeWindow: null,
+    preferredStart: null,
+    preferredEnd: null,
+    attendees: [],
+  },
   calendarResults: [],
   awaitingConfirmation: false,
   lastSearchParams: null,
@@ -96,5 +103,25 @@ describe('Combined single message', () => {
     expect(result.slots.day).toBe('2026-05-19');
     expect(result.slots.timeWindow).toBe('morning');
     expect(result.slots.attendees).toContain('jane@company.io');
+  });
+});
+
+describe('Preferred time extraction', () => {
+  test('at 10 AM', () => {
+    const result = extractAndUpdateSlots('book at 10 AM tomorrow', blank, debug(), TODAY);
+    expect(result.slots.preferredStart).toBe('10:00');
+  });
+
+  test('9 to 11 am range', () => {
+    const result = extractAndUpdateSlots('book 9 to 11 am on friday', blank, debug(), TODAY);
+    expect(result.slots.preferredStart).toBe('09:00');
+    expect(result.slots.preferredEnd).toBe('11:00');
+  });
+});
+
+describe('extractBookingDays', () => {
+  test('next 3 days', () => {
+    const days = extractBookingDays('book for the next 3 days at 10', TODAY);
+    expect(days).toHaveLength(3);
   });
 });

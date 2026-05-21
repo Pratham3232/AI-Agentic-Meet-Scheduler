@@ -2,6 +2,13 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import ChatWindow from '@/components/ChatWindow';
+import {
+  CONFLICT_HANDLING_RULES,
+  PROXIMITY_SLOT_RULES,
+  MULTI_DAY_BOOKING_RULES,
+  MULTI_BOOKING_GAP_RULES,
+  ASYNC_PROMISE_BAN,
+} from '@/lib/agent/prompt-shared';
 
 type SlotOption = { display: string; start: string; end: string };
 type EventItem = { id: string; summary: string; display: string };
@@ -218,9 +225,9 @@ BOOK A MEETING — "schedule", "book", "set up", "find time", "arrange", "block 
   ASAP — "ASAP", "as soon as possible", "soonest", "right now", "urgent", "today if possible", "next available":
     → Call find_next_slot(duration). Only ask for duration if truly missing. NEVER ask for a day or time window.
 
-  SPECIFIC TIME — "tomorrow", "Monday", "next Tuesday", "this Friday afternoon", "next week morning":
-    → Resolve the day to YYYY-MM-DD using the DATE REFERENCE above. If no window stated, default timeWindow="anytime".
-    → Call find_free_slots(duration, day, timeWindow).
+  SPECIFIC TIME — "tomorrow", "Monday", "at 10 AM", "9 to 11":
+    → Resolve the day to YYYY-MM-DD. If user names a clock time, pass preferredStartTime (and preferredEndTime for ranges).
+    → Call find_free_slots(duration, day, timeWindow, preferredStartTime, preferredEndTime).
 
   If duration is missing: ask exactly — "How long should the meeting be?"
 
@@ -247,17 +254,11 @@ RESCHEDULE / MOVE — "reschedule", "move", "change the time", "push back", "shi
   → If MULTIPLE matches: list them, ask which one, then proceed as above.
   → NEVER say "shall I proceed?" or "are you sure?" at any step.
 
-━━━ MULTI-BOOKING (CRITICAL — batch all bookings) ━━━
-When the user asks to book MULTIPLE meetings in one request:
-  - Find slots for ALL meetings first.
-  - Present ALL proposed slots together, then ask for ONE confirmation.
-  - On confirmation, call create_event for EVERY meeting — do NOT ask per-meeting.
-  - NEVER book one then ask "shall I book the next?" — batch them all.
+${MULTI_DAY_BOOKING_RULES}
 
-When booking with a "gap" or "apart":
-  - "1 hour apart" = 1 hour FREE TIME between END of one and START of the next.
-  - NEVER book overlapping meetings. Verify: meeting2.start >= meeting1.end + gap.
-  - When finding slots for the second meeting, search starting AFTER (first meeting end + gap).
+${MULTI_BOOKING_GAP_RULES}
+
+${ASYNC_PROMISE_BAN}
 
 ━━━ MERGE MEETINGS ━━━
 When user says "merge", "combine", "consolidate" meetings in a time range:
@@ -273,18 +274,9 @@ When users express scheduling constraints, think through the math:
   - "Between 9 and 12" + "2 hour meeting" → slot must start by 10 AM.
   - Always respect user-stated work hours / closing times when filtering results.
 
-━━━ CONFLICT HANDLING (CRITICAL — never dead-end) ━━━
-When find_free_slots returns 0 slots, the tool result includes:
-  - "blockingEvents": the existing meetings filling the requested window.
-  - "conflictStrategy" / "conflictMessage": alternative slots found automatically.
+${CONFLICT_HANDLING_RULES}
 
-Your response MUST:
-1. SHOW THE BLOCKER: Tell the user what is in the way.
-   Example: "Tuesday afternoon is blocked by Team Standup (2–3 PM) and Design Review (3–4:30 PM)."
-2. OFFER THE ALTERNATIVE: If the tool returned alternative slots, present them immediately.
-   Example: "But Wednesday morning is open — here are some options:"
-3. If NO alternatives found: suggest a different day, shorter duration, or different window.
-   NEVER just say "no slots available" and stop.
+${PROXIMITY_SLOT_RULES}
 
 ━━━ CONVERSATION RULES ━━━
 
@@ -320,15 +312,31 @@ English only.`,
         {
           type: 'function',
           name: 'find_free_slots',
-          description: 'Find available slots on a specific day/window. Use when user specifies a day or time preference.',
+          description: 'Find slots on a day/window. Pass preferredStartTime when user names a specific time — returns requestedSlot blockers + proximity-ranked alternatives.',
           parameters: {
             type: 'object',
             properties: {
               duration:   { type: 'number', description: 'Duration in minutes' },
               day:        { type: 'string', description: 'ISO date YYYY-MM-DD' },
               timeWindow: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'anytime'] },
+              preferredStartTime: { type: 'string', description: 'e.g. "10:00" or "10 AM"' },
+              preferredEndTime: { type: 'string', description: 'End of range if user said "9 to 11"' },
             },
             required: ['duration', 'day', 'timeWindow'],
+          },
+        },
+        {
+          type: 'function',
+          name: 'plan_multi_day_bookings',
+          description: 'Plan same-time bookings across multiple days. Returns autoBookable vs conflict days (one alternative per conflict).',
+          parameters: {
+            type: 'object',
+            properties: {
+              durationMinutes: { type: 'number' },
+              days: { type: 'array', items: { type: 'string' } },
+              preferredTime: { type: 'string', description: 'Local time each day e.g. "10 AM"' },
+            },
+            required: ['durationMinutes', 'days', 'preferredTime'],
           },
         },
         {

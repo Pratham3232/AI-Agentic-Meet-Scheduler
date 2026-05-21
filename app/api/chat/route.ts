@@ -14,10 +14,11 @@ import {
   hasAllRequiredSlots,
   updateSlot,
 } from '@/lib/agent/state';
-import { findFreeSlots } from '@/lib/calendar/freebusy';
 import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
-import { getTimeWindowBounds, formatSlotList, formatTimeSlot } from '@/lib/calendar/utils';
-import { resolveConflict } from '@/lib/agent/conflict-resolver';
+import { formatTimeSlot } from '@/lib/calendar/utils';
+import { executeFindFreeSlots } from '@/lib/agent/find-slots';
+import { planMultiDayBookings } from '@/lib/agent/multi-booking';
+import { isSlotFree } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { generateVoiceScript } from '@/lib/voice-script';
 import { ConversationState, WorkingHours } from '@/types';
@@ -47,84 +48,95 @@ async function executeTool(
 
   // ── find_free_slots ────────────────────────────────────────────────────────
   if (toolName === 'find_free_slots') {
-    const { duration, day, timeWindow } = args as {
+    const {
+      duration,
+      day,
+      timeWindow,
+      preferredStartTime,
+      preferredEndTime,
+    } = args as {
       duration: number;
       day: string;
       timeWindow: string;
+      preferredStartTime?: string;
+      preferredEndTime?: string;
     };
 
-    const bounds = getTimeWindowBounds(day, timeWindow, timezone, undefined, workingHours);
-
-    debug.log({
-      type: 'calendar_query',
-      startTime: bounds.start,
-      endTime: bounds.end,
-      duration,
+    const now = new Date();
+    const result = await executeFindFreeSlots(
+      {
+        duration,
+        day,
+        timeWindow,
+        preferredStartTime: preferredStartTime ?? state.slots.preferredStart ?? undefined,
+        preferredEndTime: preferredEndTime ?? state.slots.preferredEnd ?? undefined,
+      },
       timezone,
-    });
-
-    let slots = await findFreeSlots(bounds.start, bounds.end, duration, undefined, debug);
-    let conflictStrategy: string | null = null;
-    let conflictMessage = '';
-    let blockingEvents: Array<{ summary: string; start: string; end: string; display: string }> = [];
-
-    if (slots.length === 0) {
-      // Fetch the events that are blocking this window so the LLM can show them
-      const existingEvents = await listEvents(bounds.start, bounds.end, undefined, debug);
-      blockingEvents = existingEvents
-        .filter(e => e.start?.dateTime && e.end?.dateTime)
-        .map(e => ({
-          summary: e.summary ?? '(no title)',
-          start: e.start.dateTime!,
-          end: e.end.dateTime!,
-          display: formatTimeSlot({ start: e.start.dateTime!, end: e.end.dateTime! }, timezone),
-        }));
-
-      const conflict = await resolveConflict({ duration, day, timeWindow }, debug, timezone, workingHours);
-      slots = conflict.slots;
-      conflictStrategy = conflict.strategy;
-      conflictMessage = conflict.message;
-    }
+      debug,
+      workingHours,
+      now
+    );
 
     const updatedSlots = {
       ...state.slots,
       duration,
       day,
       timeWindow,
+      preferredStart: preferredStartTime ?? state.slots.preferredStart,
+      preferredEnd: preferredEndTime ?? state.slots.preferredEnd,
     };
 
-    debug.log({
-      type: 'tool_result',
-      tool: 'find_free_slots',
-      summary: `${slots.length} slot(s) found, strategy=${conflictStrategy ?? 'direct'}, blocking=${blockingEvents.length}`,
-    });
-
     const toolResult: Record<string, any> = {
-      slotsFound: slots.length,
-      slots: slots.slice(0, 5).map(s => ({
+      slotsFound: result.slotsFound,
+      slots: result.slots.map(s => ({
         start: s.start,
         end: s.end,
         display: formatTimeSlot(s, timezone),
       })),
-      conflictStrategy,
-      conflictMessage: conflictMessage || null,
-      searchParams: { duration, day, timeWindow },
+      conflictStrategy: result.conflictStrategy,
+      conflictMessage: result.conflictMessage,
+      searchParams: result.searchParams,
+      hint: result.hint ?? null,
     };
 
-    if (blockingEvents.length > 0) {
-      toolResult.blockingEvents = blockingEvents;
-    }
+    if (result.blockingEvents?.length) toolResult.blockingEvents = result.blockingEvents;
+    if (result.requestedSlot) toolResult.requestedSlot = result.requestedSlot;
 
     console.log(`[PERF][chat] executeTool find_free_slots: ${Date.now() - tExec}ms`);
     return {
       toolResult,
       stateUpdates: {
         slots: updatedSlots,
-        calendarResults: slots,
-        lastSearchParams: { duration, day, timeWindow },
-        awaitingConfirmation: slots.length > 0,
+        calendarResults: result.slots,
+        lastSearchParams: result.searchParams,
+        awaitingConfirmation: result.slotsFound > 0 || result.requestedSlot?.available === true,
       },
     };
+  }
+
+  // ── plan_multi_day_bookings ───────────────────────────────────────────────
+  if (toolName === 'plan_multi_day_bookings') {
+    const { durationMinutes, days, preferredTime } = args as {
+      durationMinutes: number;
+      days: string[];
+      preferredTime: string;
+    };
+
+    const plan = await planMultiDayBookings(
+      { durationMinutes, days, preferredTime, timezone, workingHours },
+      debug
+    );
+
+    const toolResult = {
+      ...plan,
+      hint:
+        plan.conflicts.length === 0
+          ? 'All days available. Ask ONE confirmation, then call create_event for every autoBookable entry in the same turn. Do NOT say you will notify later.'
+          : 'Show ONLY conflict days (one alternative each). Do not list autoBookable days. After user picks, book all in one turn.',
+    };
+
+    console.log(`[PERF][chat] executeTool plan_multi_day_bookings: ${Date.now() - tExec}ms`);
+    return { toolResult, stateUpdates: { awaitingConfirmation: true } };
   }
 
   // ── create_event ──────────────────────────────────────────────────────────
@@ -136,6 +148,18 @@ async function executeTool(
       attendees?: string[];
       description?: string;
     };
+
+    const free = await isSlotFree(startTime, endTime);
+    if (!free) {
+      return {
+        toolResult: {
+          success: false,
+          error: 'That time is no longer available — it conflicts with an existing event.',
+          hint: 'Call find_free_slots again with the same preferred time for proximity-ranked alternatives.',
+        },
+        stateUpdates: {},
+      };
+    }
 
     const event = await createEvent(summary, startTime, endTime, attendees, description);
 
@@ -267,7 +291,13 @@ export async function POST(req: NextRequest) {
       debug.log({ type: 'tool_call', tool: 'find_free_slots', args: { duration: state.slots.duration, day: state.slots.day, timeWindow: state.slots.timeWindow } });
       const { toolResult, stateUpdates } = await executeTool(
         'find_free_slots',
-        { duration: state.slots.duration!, day: state.slots.day!, timeWindow: state.slots.timeWindow! },
+        {
+          duration: state.slots.duration!,
+          day: state.slots.day!,
+          timeWindow: state.slots.timeWindow!,
+          preferredStartTime: state.slots.preferredStart ?? undefined,
+          preferredEndTime: state.slots.preferredEnd ?? undefined,
+        },
         state,
         timezone,
         debug,
