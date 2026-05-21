@@ -24,6 +24,8 @@ import { ConversationState, WorkingHours } from '@/types';
 import { withCalendarAuth } from '@/lib/calendar/auth';
 import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
+export const maxDuration = 30;
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const MAX_TOOL_LOOPS = 8;

@@ -4,6 +4,8 @@ import { createOAuth2Client } from '@/lib/calendar/auth';
 import { storeUserTokens } from '@/lib/auth/tokens';
 import { setSessionCookie } from '@/lib/auth/cookie';
 
+export const maxDuration = 10;
+
 export async function GET(req: NextRequest) {
   const code = req.nextUrl.searchParams.get('code');
   const error = req.nextUrl.searchParams.get('error');

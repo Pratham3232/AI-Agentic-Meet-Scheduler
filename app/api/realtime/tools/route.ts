@@ -11,6 +11,8 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { withCalendarAuth } from '@/lib/calendar/auth';
 import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
+export const maxDuration = 15;
+
 /**
  * POST /api/realtime/tools
  * Executes tool calls from the Realtime API.

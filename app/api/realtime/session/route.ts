@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+export const maxDuration = 10;
+
 /**
  * POST /api/realtime/session
  * Mints an ephemeral client secret for the browser to connect directly to
