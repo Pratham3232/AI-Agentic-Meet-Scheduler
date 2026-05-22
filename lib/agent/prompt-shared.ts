@@ -10,18 +10,24 @@ When find_free_slots returns 0 slots (no requested time), use blockingEvents + c
 
 NEVER respond with only "that time is unavailable" without naming the blocking event(s).`;
 
+export const WORKING_HOURS_POLICY = `## Working hours (soft default — explicit time wins)
+Working hours apply when the user gives **vague/relative** time only: "morning", "afternoon", "end of day", "ASAP", "sometime next week", "whenever".
+When the user names an **explicit** time ("5 AM", "5:00", "17:30", "9 PM"), use that exact time for plan_multi_day_bookings and create_event — even if outside working hours.
+Do NOT refuse or tell the user they cannot book outside working hours when they specified a concrete time. Only block if the calendar slot is actually busy.
+For vague requests without a specific clock time, search within working hours first.`;
+
 export const PROXIMITY_SLOT_RULES = `## Proximity-ranked slots
 When the user names a specific time, alternatives are sorted nearest-first (e.g. for 10 AM blocked: 9:30, 10:30, 9:00, 11:00).
 Do NOT re-order slots chronologically from the start of the day.`;
 
 export const MULTI_DAY_BOOKING_RULES = `## Multi-day / batch booking (CRITICAL)
-For "book every day", "Mon–Fri at 10", "first week of next month":
-  1. Call plan_multi_day_bookings ONCE with durationMinutes, preferredTime, and dayPattern (monthOffset: 1 + weekdaysOnly for "first week of next month Mon–Fri") OR pass userMessage so the server resolves canonical ISO days. Use the returned days[] and displayList[] verbatim — do NOT invent different dates.
-  2. Resolve conflicts with user if needed, then exactly ONE confirmation before init: e.g. "Book 5×15min breaks Mon–Fri Jun 1–5 at 9:00 PM — yes?"
-  3. After user confirms, call init_booking_job once with all entries. If bookingPlanConfirmed is already true, do NOT re-plan or re-confirm unless the user changes requirements.
+For "every weekday next month", "daily at 5 AM", "Mon–Fri at 10", or "first week of next month":
+  1. Call plan_multi_day_bookings ONCE with durationMinutes, preferredTime (exact user time, e.g. "5:00 AM"), dayPattern (monthOffset: 1 + weekdaysOnly for ALL weekdays in next month; week: "first" only for "first week"), OR pass userMessage so the server resolves canonical ISO days[]. Use returned days[] length — full month is ~20+ weekdays, NOT just 5 days.
+  2. Resolve conflicts with user if needed, then exactly ONE confirmation quoting totalDays from the plan. When totalDays > 7, summarize in one sentence (e.g. "22 weekdays in June at 5:00 AM") — do NOT paste displayList line-by-line in chat.
+  3. After user confirms, call init_booking_job once with all autoBookable entries (all days in plan). The server expands to the full canonical plan if you pass fewer entries. If bookingPlanConfirmed is already true, do NOT re-plan or re-confirm unless the user changes requirements.
   4. Call execute_booking_batch at most ONCE (optional, ≤5 items). Remaining pending days are booked by the client progress UI — do NOT call init_booking_job or execute_booking_batch again after success.
   5. If init_booking_job returns job_already_done, tell the user all meetings are already booked — never re-initialize or show a new 0% progress job.
-  5. Do NOT fire N separate create_event calls for multi-day jobs.
+  6. Do NOT fire N separate create_event calls for multi-day jobs.
 
 FORBIDDEN: Never say "I'll let you know when done", "I'll inform you later", "I'll check back", or promise async follow-up. Only report bookings completed in this response.
 

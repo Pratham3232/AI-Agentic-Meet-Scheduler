@@ -64,6 +64,10 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
             type: 'string',
             description: 'Optional user text for server day resolution (e.g. first week of next month Mon–Fri)',
           },
+          summary: {
+            type: 'string',
+            description: 'Event title for all days, e.g. "Yoga" or "Team standup"',
+          },
         },
         required: ['durationMinutes', 'days', 'preferredTime'],
         additionalProperties: false,

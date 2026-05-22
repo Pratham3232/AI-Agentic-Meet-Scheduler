@@ -79,9 +79,24 @@ export interface LastRescheduledEvent {
   day: string;
 }
 
+export interface LastMultiDayPlan {
+  days: string[];
+  initEntries: Array<{
+    day: string;
+    start: string;
+    end: string;
+    summary: string;
+  }>;
+  preferredTime: string;
+  totalDays: number;
+  summary: string;
+  conflictCount: number;
+}
+
 export interface ConversationState {
   sessionId: string;
   bookingJob: BookingJob | null;
+  lastMultiDayPlan: LastMultiDayPlan | null;
   bookingPlanConfirmed: boolean;
   confirmedPlanSummary: string | null;
   cachedCalendar: CachedCalendarSnapshot | null;

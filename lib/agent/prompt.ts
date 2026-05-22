@@ -4,6 +4,7 @@ import { formatTimeSlot } from '../calendar/utils';
 import {
   CONFLICT_HANDLING_RULES,
   PROXIMITY_SLOT_RULES,
+  WORKING_HOURS_POLICY,
   MULTI_DAY_BOOKING_RULES,
   MULTI_BOOKING_GAP_RULES,
   ASYNC_PROMISE_BAN,
@@ -100,8 +101,8 @@ CRITICAL: "tomorrow" = ${tomorrowDate}. "day after tomorrow" = ${dayAfterDate}. 
 IMPORTANT: Never suggest a time slot that is before ${nowLocal} today.
 
 ## User Working Hours
-The user's working hours are ${whLabel} in their timezone (${timezone}).
-ALWAYS respect these hours when searching for slots. Do not suggest slots outside these hours.
+Default range for **vague** time searches: ${whLabel} (${timezone}).
+${WORKING_HOURS_POLICY}
 
 ## Duration Parsing (EXACT — never substitute a different value)
 Convert the user's duration to minutes precisely:

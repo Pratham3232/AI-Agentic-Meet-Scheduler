@@ -10,6 +10,7 @@ function testState(): ConversationState {
   return {
     sessionId: 'sess-1',
     bookingJob: null,
+    lastMultiDayPlan: null,
     bookingPlanConfirmed: false,
     confirmedPlanSummary: null,
     cachedCalendar: null,

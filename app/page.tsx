@@ -2,11 +2,18 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import ChatWindow from '@/components/ChatWindow';
-import BookingProgress from '@/components/BookingProgress';
 import type { BookingProgressSnapshot } from '@/types';
+import {
+  bookingProgressContent,
+  shouldApplyBookingProgress,
+  upsertBookingProgressMessage,
+  messagesHaveCompletedProgress,
+  isNewBookingJob,
+} from '@/lib/client/booking-progress-ui';
 import {
   CONFLICT_HANDLING_RULES,
   PROXIMITY_SLOT_RULES,
+  WORKING_HOURS_POLICY,
   MULTI_DAY_BOOKING_RULES,
   MULTI_BOOKING_GAP_RULES,
   ASYNC_PROMISE_BAN,
@@ -23,20 +30,6 @@ type Message = {
   bookingProgress?: BookingProgressSnapshot;
 };
 type WorkingHours = { startHour: number; endHour: number };
-
-function shouldApplyBookingProgress(
-  current: BookingProgressSnapshot | null,
-  next: BookingProgressSnapshot
-): boolean {
-  if (!current) return true;
-  if (current.total > 0 && current.booked === current.total && next.pending > 0) {
-    return false;
-  }
-  if (current.status === 'completed' && next.status === 'in_progress') {
-    return false;
-  }
-  return true;
-}
 
 function loadWorkingHours(): WorkingHours {
   if (typeof window === 'undefined') return { startHour: 9, endHour: 17 };
@@ -61,7 +54,7 @@ export default function Home() {
   const [showSettings, setShowSettings] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
-  const [bookingProgress, setBookingProgress] = useState<BookingProgressSnapshot | null>(null);
+  const latestProgressRef = useRef<BookingProgressSnapshot | null>(null);
 
   useEffect(() => {
     localStorage.setItem('workingHours', JSON.stringify(workingHours));
@@ -126,6 +119,7 @@ export default function Home() {
           try {
             const payload = JSON.parse(line.slice(6));
             if (payload.type === 'progress' || payload.type === 'complete') {
+              if (payload.duplicateBlocked) continue;
               const snap: BookingProgressSnapshot = {
                 jobId: payload.jobId ?? sid,
                 status: payload.status ?? (payload.type === 'complete' ? 'completed' : 'in_progress'),
@@ -137,25 +131,11 @@ export default function Home() {
                 percent: payload.percent ?? 0,
                 items: payload.items ?? [],
               };
-              setBookingProgress(prev =>
-                shouldApplyBookingProgress(prev, snap) ? snap : prev
+              if (!shouldApplyBookingProgress(latestProgressRef.current, snap)) continue;
+              latestProgressRef.current = snap;
+              setMessages(prev =>
+                upsertBookingProgressMessage(prev, snap) as Message[]
               );
-              setMessages(prev => {
-                const idx = prev.findIndex(m => m.role === 'assistant' && m.bookingProgress);
-                const progressMsg: Message = {
-                  role: 'assistant',
-                  content: payload.type === 'complete'
-                    ? `Booking complete — ${payload.booked} booked, ${payload.failed} failed.`
-                    : 'Booking in progress…',
-                  bookingProgress: snap,
-                };
-                if (idx >= 0) {
-                  const updated = [...prev];
-                  updated[idx] = progressMsg;
-                  return updated;
-                }
-                return [...prev, progressMsg];
-              });
             }
           } catch {
             /* ignore malformed SSE chunks */
@@ -190,13 +170,25 @@ export default function Home() {
       const assistantMsg: Message = { role: 'assistant', content: data.message };
       if (data.slots?.length) assistantMsg.slots = data.slots;
       if (data.events?.length) assistantMsg.events = data.events;
-      setMessages(prev => [...prev, assistantMsg]);
       if (data.sessionId && !sessionId) setSessionId(data.sessionId);
 
       const sid = data.sessionId || sessionId;
-      if (data.bookingJob) {
-        setBookingProgress(data.bookingJob);
-      }
+      setMessages(prev => {
+        let next = [...prev, assistantMsg];
+        if (data.bookingJob) {
+          if (isNewBookingJob(latestProgressRef.current, data.bookingJob)) {
+            latestProgressRef.current = data.bookingJob;
+          } else if (shouldApplyBookingProgress(latestProgressRef.current, data.bookingJob)) {
+            latestProgressRef.current = data.bookingJob;
+          }
+          if (latestProgressRef.current === data.bookingJob) {
+            next = upsertBookingProgressMessage(next, data.bookingJob, {
+              attachToLastAssistant: true,
+            }) as Message[];
+          }
+        }
+        return next;
+      });
       if (data.startBookingRun && sid) {
         await runBookingJob(sid);
       }
@@ -237,13 +229,15 @@ export default function Home() {
         data.result?.progress
       ) {
         const next = data.result.progress as BookingProgressSnapshot;
-        setBookingProgress(prev => {
-          const apply =
-            data.result.error === 'job_already_done' ||
-            shouldApplyBookingProgress(prev, next);
-          if (apply) pendingBookingRef.current = next;
-          return apply ? next : prev;
-        });
+        const blocked = data.result.error === 'job_already_done';
+        if (isNewBookingJob(latestProgressRef.current, next)) {
+          latestProgressRef.current = next;
+        } else if (shouldApplyBookingProgress(latestProgressRef.current, next)) {
+          latestProgressRef.current = next;
+        }
+        if (!blocked && latestProgressRef.current === next) {
+          pendingBookingRef.current = next;
+        }
         if (data.result.startBookingRun && data.sessionId && !data.result.error) {
           void runBookingJob(data.sessionId);
         }
@@ -314,8 +308,8 @@ Current time: ${timeStr}
 User timezone: ${timezone}
 
 ━━━ USER WORKING HOURS ━━━
-The user's working hours are ${workingHours.startHour}:00 – ${workingHours.endHour}:00 in their timezone.
-ALWAYS respect these hours. Do not suggest slots outside this range.
+Default range for vague time searches: ${workingHours.startHour}:00 – ${workingHours.endHour}:00 (${timezone}).
+${WORKING_HOURS_POLICY}
 
 CRITICAL: When the user says "tomorrow", ALWAYS use ${tomorrowDate}. When they say "day after tomorrow", use ${dayAfterDate}. Do NOT add extra days. The backend enforces all time constraints.
 
@@ -706,18 +700,45 @@ English only.`,
           content: text || fallback,
           ...(slots?.length ? { slots } : {}),
           ...(events?.length ? { events } : {}),
-          ...(booking ? { bookingProgress: booking } : {}),
         };
 
         if (text && assistantMsgIndexRef.current >= 0) {
           const idx = assistantMsgIndexRef.current;
           setMessages(prev => {
-            const updated = [...prev];
+            let updated = [...prev];
             if (idx < updated.length) updated[idx] = msg;
+            if (booking && !messagesHaveCompletedProgress(prev, booking.jobId)) {
+              if (isNewBookingJob(latestProgressRef.current, booking)) {
+                latestProgressRef.current = booking;
+              } else if (shouldApplyBookingProgress(latestProgressRef.current, booking)) {
+                latestProgressRef.current = booking;
+              }
+              if (latestProgressRef.current === booking) {
+                updated = upsertBookingProgressMessage(updated, booking, {
+                  content: text || bookingProgressContent(booking),
+                  attachToLastAssistant: true,
+                }) as Message[];
+              }
+            }
             return updated;
           });
         } else if (msg.content) {
-          setMessages(prev => [...prev, msg]);
+          setMessages(prev => {
+            if (booking && !messagesHaveCompletedProgress(prev, booking.jobId)) {
+              if (isNewBookingJob(latestProgressRef.current, booking)) {
+                latestProgressRef.current = booking;
+              } else if (shouldApplyBookingProgress(latestProgressRef.current, booking)) {
+                latestProgressRef.current = booking;
+              }
+              if (latestProgressRef.current === booking) {
+                const withMsg = [...prev, msg];
+                return upsertBookingProgressMessage(withMsg, booking, {
+                  attachToLastAssistant: true,
+                }) as Message[];
+              }
+            }
+            return [...prev, msg];
+          });
         }
 
         assistantTranscriptRef.current = '';
@@ -886,7 +907,7 @@ English only.`,
     pendingSlotsRef.current = null;
     pendingEventsRef.current = null;
     pendingBookingRef.current = null;
-    setBookingProgress(null);
+    latestProgressRef.current = null;
   }, []);
 
   const toggleVoice = useCallback(() => {
@@ -983,10 +1004,6 @@ English only.`,
         )}
 
         <ChatWindow messages={messages} isLoading={isLoading} onSlotPick={handleSlotPick} />
-
-        {bookingProgress?.status === 'in_progress' && (
-          <BookingProgress progress={bookingProgress} />
-        )}
 
         <div className="chat-input-container">
           <input

@@ -9,7 +9,16 @@ export type DebugEntry =
   | { type: 'freebusy_result'; busyCount: number; freeCount: number; strategy: string }
   | { type: 'conflict_resolution'; step: number; strategy: string; slotsFound: number }
   | { type: 'final_response'; textLength: number }
-  | { type: 'booking_job_init'; jobId: string; total: number; days: string[]; blocked?: boolean; reason?: string }
+  | {
+      type: 'booking_job_init';
+      jobId: string;
+      total: number;
+      days: string[];
+      blocked?: boolean;
+      reason?: string;
+      overriddenFromPlan?: boolean;
+      llmEntryCount?: number;
+    }
   | { type: 'booking_batch_item'; day: string; action: string; isSlotFree?: boolean; eventId?: string; error?: string }
   | { type: 'booking_batch_done'; booked: number; failed: number; pending: number; done: boolean }
   | { type: 'booking_sse_start'; sessionId: string; jobId: string; pending: number }

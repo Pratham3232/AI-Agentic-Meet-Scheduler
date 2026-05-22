@@ -10,6 +10,13 @@ import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calenda
 import { getTimeWindowBounds, formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
+import {
+  buildLastMultiDayPlan,
+  buildPlanToolResult,
+  buildShortPlanSummary,
+  resolveInitEntries,
+  stateUpdatesForNewPlan,
+} from '@/lib/agent/multi-day-plan';
 import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
 import { invalidateEventCache, updateEventCache } from '@/lib/agent/event-cache';
 import { isSlotFree, filterFutureSlots } from '@/lib/calendar/slot-search';
@@ -157,18 +164,43 @@ export async function POST(req: NextRequest) {
         debug,
         now
       );
-      result = {
-        ...plan,
-        hint:
-          plan.conflicts.length === 0
-            ? 'Use days[] and displayList[] from this result. ONE confirmation, then init_booking_job.'
-            : 'Show ONLY conflict days. After user picks, init_booking_job once.',
-      };
+      const eventSummary =
+        typeof args.summary === 'string' && args.summary.trim()
+          ? args.summary.trim()
+          : 'Meeting';
+      const planResets = stateUpdatesForNewPlan(state);
+      if (planResets.bookingJob === null) {
+        state.bookingJob = null;
+      }
+      state.bookingPlanConfirmed = false;
+      state.confirmedPlanSummary = null;
+      const lastMultiDayPlan = buildLastMultiDayPlan(plan, preferredTime, eventSummary);
+      result = buildPlanToolResult(plan);
       state.awaitingConfirmation = true;
+      state.lastMultiDayPlan = lastMultiDayPlan;
 
     } else if (toolName === 'init_booking_job') {
       const { entries, force } = args;
-      const initResult = await initBookingJob(entries ?? [], timezone, state.bookingJob, force);
+      const { entries: resolvedEntries, overridden } = resolveInitEntries(
+        entries ?? [],
+        state.lastMultiDayPlan
+      );
+      if (overridden) {
+        debug.log({
+          type: 'booking_job_init',
+          jobId: state.bookingJob?.id ?? 'new',
+          total: resolvedEntries.length,
+          days: resolvedEntries.map((e: { day: string }) => e.day),
+          overriddenFromPlan: true,
+          llmEntryCount: entries?.length ?? 0,
+        });
+      }
+      const initResult = await initBookingJob(
+        resolvedEntries,
+        timezone,
+        state.bookingJob,
+        force
+      );
       if ('error' in initResult) {
         result = {
           error: initResult.error,
@@ -182,20 +214,27 @@ export async function POST(req: NextRequest) {
         state.bookingJob = job;
         state.awaitingConfirmation = false;
         state.bookingPlanConfirmed = true;
-        state.confirmedPlanSummary = `${total} meeting(s)`;
+        state.confirmedPlanSummary = state.lastMultiDayPlan
+          ? buildShortPlanSummary(state.lastMultiDayPlan)
+          : `${total} meeting(s)`;
+        state.lastMultiDayPlan = null;
         const progress = getBookingProgress(job);
         debug.log({
           type: 'booking_job_init',
           jobId,
           total,
-          days: (entries ?? []).map((e: { day: string }) => e.day),
+          days: resolvedEntries.map((e: { day: string }) => e.day),
+          overriddenFromPlan: overridden,
         });
         result = {
           jobId,
           total,
           progress,
-          hint,
+          hint: overridden
+            ? `${hint} Server expanded to ${total} day(s) from the confirmed plan.`
+            : hint,
           startBookingRun: progress.pending > 0,
+          entriesOverridden: overridden,
         };
       }
 

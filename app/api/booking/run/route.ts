@@ -1,9 +1,11 @@
 import { NextRequest } from 'next/server';
 import { getSession, saveSession } from '@/lib/session/store';
 import { getBookingProgress, runBookingJobToCompletion } from '@/lib/agent/booking-executor';
+import { clearSseLock, isStaleSseLock } from '@/lib/agent/booking-sse';
 import { withCalendarAuth } from '@/lib/calendar/auth';
 import { resolveCalendarAuth } from '@/lib/auth/resolve';
 import { DebugLogger } from '@/lib/debug';
+import type { BookingJob } from '@/types';
 
 export const maxDuration = 60;
 
@@ -37,22 +39,59 @@ export async function POST(req: NextRequest) {
 
           const progress0 = getBookingProgress(state.bookingJob);
           if (progress0.pending === 0 || state.bookingJob.status === 'completed') {
-            send({ type: 'complete', ...progress0 });
+            send({ type: 'complete', ...progress0, duplicateBlocked: false });
             controller.close();
             return;
           }
 
+          if (isStaleSseLock(state.bookingJob)) {
+            state.bookingJob = clearSseLock(state.bookingJob);
+            await saveSession(state);
+          } else if (state.bookingJob.sseInProgress) {
+            debug.log({
+              type: 'booking_sse_end',
+              sessionId,
+              booked: progress0.booked,
+              failed: progress0.failed,
+              blocked: true,
+            });
+            send({ type: 'complete', ...progress0, duplicateBlocked: true });
+            controller.close();
+            return;
+          }
+
+          state.bookingJob = {
+            ...state.bookingJob,
+            sseInProgress: true,
+            updatedAt: new Date().toISOString(),
+          };
+          await saveSession(state);
+
+          const persistProgress = async (job: BookingJob) => {
+            state.bookingJob = {
+              ...job,
+              sseInProgress: true,
+            };
+            await saveSession(state);
+          };
+
           const { job, progress, blocked } = await runBookingJobToCompletion(
             state.bookingJob,
             batchSize,
-            p => {
+            async p => {
               send({ type: 'progress', ...p });
+              await persistProgress({
+                ...state.bookingJob!,
+                items: p.items,
+                status: p.status,
+                updatedAt: new Date().toISOString(),
+              });
             },
             debug,
             sessionId
           );
 
-          state.bookingJob = job;
+          state.bookingJob = { ...job, sseInProgress: false };
           await saveSession(state);
 
           send({
@@ -63,6 +102,15 @@ export async function POST(req: NextRequest) {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        try {
+          const state = await getSession(sessionId);
+          if (state?.bookingJob) {
+            state.bookingJob = { ...state.bookingJob, sseInProgress: false };
+            await saveSession(state);
+          }
+        } catch {
+          /* ignore cleanup errors */
+        }
         send({ type: 'error', error: message });
       } finally {
         controller.close();

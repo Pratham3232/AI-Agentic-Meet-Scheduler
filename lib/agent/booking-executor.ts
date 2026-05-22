@@ -451,17 +451,6 @@ export async function runBookingJobToCompletion(
     return { job: finalized, progress: getBookingProgress(finalized) };
   }
 
-  if (job.sseInProgress) {
-    debug?.log({
-      type: 'booking_sse_end',
-      sessionId: sessionId ?? '',
-      booked: progress0.booked,
-      failed: progress0.failed,
-      blocked: true,
-    });
-    return { job, progress: progress0, blocked: true };
-  }
-
   debug?.log({
     type: 'booking_sse_start',
     sessionId: sessionId ?? '',

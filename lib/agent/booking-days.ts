@@ -5,9 +5,11 @@ export interface BookingDayPattern {
   monthOffset?: number;
   weekdaysOnly?: boolean;
   weekdayIndices?: number[];
+  /** first/last week of month; omit for full-month weekdays when monthOffset set */
   week?: 'first' | 'last';
   month?: number;
   year?: number;
+  scope?: 'fullMonth' | 'firstWeek' | 'lastWeek';
 }
 
 const MONTH_NAMES: Record<string, number> = {
@@ -120,6 +122,52 @@ export function resolveWeekdaysInRange(
 /** Mon=1 … Fri=5 in getDay: Monday=1, Friday=5 */
 const MON_FRI = [1, 2, 3, 4, 5];
 
+/** All Mon–Fri dates within a calendar month (user timezone). */
+export function resolveAllWeekdaysInMonth(
+  year: number,
+  month: number,
+  timezone: string,
+  weekdayIndices: number[] = MON_FRI
+): string[] {
+  const lastDay = getDaysInMonth(monthAnchor(year, month, 1, timezone));
+  const startDay = isoDayInTz(monthAnchor(year, month, 1, timezone), timezone);
+  const endDay = isoDayInTz(monthAnchor(year, month, lastDay, timezone), timezone);
+  return resolveWeekdaysInRange(startDay, endDay, weekdayIndices, timezone);
+}
+
+/** Every calendar day in a month (user timezone). */
+export function resolveAllDaysInMonth(
+  year: number,
+  month: number,
+  timezone: string
+): string[] {
+  const lastDay = getDaysInMonth(monthAnchor(year, month, 1, timezone));
+  const days: string[] = [];
+  for (let d = 1; d <= lastDay; d++) {
+    days.push(isoDayInTz(monthAnchor(year, month, d, timezone), timezone));
+  }
+  return days;
+}
+
+/** Drop dates strictly before today in the user's timezone. */
+export function filterFutureDays(
+  days: string[],
+  timezone: string,
+  today: Date = new Date()
+): string[] {
+  const todayIso = formatInTimeZone(today, timezone, 'yyyy-MM-dd');
+  return days.filter(d => d >= todayIso);
+}
+
+function targetMonthFromOffset(
+  monthOffset: number,
+  today: Date,
+  timezone: string
+): { year: number; month: number } {
+  const current = parseYearMonth(formatInTimeZone(today, timezone, 'yyyy-MM'));
+  return shiftYearMonth(current.year, current.month, monthOffset);
+}
+
 function parseNamedMonth(lower: string, today: Date, timezone: string): { year: number; month: number } | null {
   for (const [name, num] of Object.entries(MONTH_NAMES)) {
     if (new RegExp(`\\b${name}\\b`).test(lower)) {
@@ -149,7 +197,13 @@ export function parseBookingDayRequest(
 
   const wantsFirstWeek = /\bfirst week\b/.test(lower);
   const wantsLastWeek = /\blast week\b/.test(lower);
+  const wantsAllCalendarDays =
+    /\bevery day\b/.test(lower) ||
+    /\beach day\b/.test(lower) ||
+    /\ball days\b/.test(lower);
+  const wantsDaily = /\bdaily\b/.test(lower);
   const wantsWeekdays =
+    wantsDaily ||
     /\bmonday\s*(?:through|to|-)\s*friday\b/.test(lower) ||
     /\bmon\s*[-–]\s*fri\b/i.test(lower) ||
     /\bevery weekday\b/.test(lower) ||
@@ -188,9 +242,29 @@ export function parseBookingDayRequest(
     return resolveFirstWeekOfMonth(monthOffset, timezone, today).days;
   }
 
-  if (wantsWeekdays && monthOffset !== null) {
-    const week = resolveFirstWeekOfMonth(monthOffset, timezone, today);
-    return resolveWeekdaysInRange(week.startDay, week.endDay, MON_FRI, timezone);
+  if (
+    (wantsAllCalendarDays || wantsWeekdays) &&
+    monthOffset !== null &&
+    !wantsFirstWeek &&
+    !wantsLastWeek
+  ) {
+    const target = targetMonthFromOffset(monthOffset, today, timezone);
+    const days = wantsAllCalendarDays && !wantsWeekdays
+      ? resolveAllDaysInMonth(target.year, target.month, timezone)
+      : resolveAllWeekdaysInMonth(target.year, target.month, timezone, MON_FRI);
+    return filterFutureDays(days, timezone, today);
+  }
+
+  if (
+    (wantsAllCalendarDays || wantsWeekdays) &&
+    namedMonth &&
+    !wantsFirstWeek &&
+    !wantsLastWeek
+  ) {
+    const days = wantsAllCalendarDays && !wantsWeekdays
+      ? resolveAllDaysInMonth(namedMonth.year, namedMonth.month, timezone)
+      : resolveAllWeekdaysInMonth(namedMonth.year, namedMonth.month, timezone, MON_FRI);
+    return filterFutureDays(days, timezone, today);
   }
 
   return null;

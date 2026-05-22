@@ -24,6 +24,13 @@ import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calenda
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
+import {
+  buildLastMultiDayPlan,
+  buildPlanToolResult,
+  buildShortPlanSummary,
+  resolveInitEntries,
+  stateUpdatesForNewPlan,
+} from '@/lib/agent/multi-day-plan';
 import { isSlotFree } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { generateVoiceScript } from '@/lib/voice-script';
@@ -122,10 +129,11 @@ async function executeTool(
 
   // ── plan_multi_day_bookings ───────────────────────────────────────────────
   if (toolName === 'plan_multi_day_bookings') {
-    const { durationMinutes, days, preferredTime, dayPattern, userMessage } = args as {
+    const { durationMinutes, days, preferredTime, dayPattern, userMessage, summary } = args as {
       durationMinutes: number;
       days: string[];
       preferredTime: string;
+      summary?: string;
       dayPattern?: {
         monthOffset?: number;
         weekdaysOnly?: boolean;
@@ -154,27 +162,46 @@ async function executeTool(
       debug
     );
 
-    const toolResult = {
-      ...plan,
-      hint:
-        plan.conflicts.length === 0
-          ? `All ${plan.days.length} day(s) available. Use days[] and displayList[] exactly. Ask ONE confirmation, then init_booking_job. Do NOT re-plan after confirm.`
-          : 'Show ONLY conflict days (one alternative each). After user picks, init_booking_job once.',
-    };
+    const eventSummary = typeof summary === 'string' && summary.trim() ? summary.trim() : 'Meeting';
+    const lastMultiDayPlan = buildLastMultiDayPlan(plan, preferredTime, eventSummary);
+    const toolResult = buildPlanToolResult(plan);
 
     console.log(`[PERF][chat] executeTool plan_multi_day_bookings: ${Date.now() - tExec}ms`);
-    return { toolResult, stateUpdates: { awaitingConfirmation: true } };
+    return {
+      toolResult,
+      stateUpdates: {
+        awaitingConfirmation: true,
+        lastMultiDayPlan,
+        ...stateUpdatesForNewPlan(state),
+      },
+    };
   }
 
   // ── init_booking_job ──────────────────────────────────────────────────────
   if (toolName === 'init_booking_job') {
-    const { entries, force } = args as {
+    const { entries, force, summary } = args as {
       entries: Array<{ day: string; start: string; end: string; summary: string }>;
       force?: boolean;
+      summary?: string;
     };
 
-    const initResult = await initBookingJob(
+    const { entries: resolvedEntries, overridden } = resolveInitEntries(
       entries ?? [],
+      state.lastMultiDayPlan
+    );
+    if (overridden) {
+      debug.log({
+        type: 'booking_job_init',
+        jobId: state.bookingJob?.id ?? 'new',
+        total: resolvedEntries.length,
+        days: resolvedEntries.map(e => e.day),
+        overriddenFromPlan: true,
+        llmEntryCount: entries?.length ?? 0,
+      });
+    }
+
+    const initResult = await initBookingJob(
+      resolvedEntries,
       timezone,
       state.bookingJob,
       force
@@ -184,8 +211,8 @@ async function executeTool(
       debug.log({
         type: 'booking_job_init',
         jobId: state.bookingJob?.id ?? 'blocked',
-        total: entries?.length ?? 0,
-        days: (entries ?? []).map(e => e.day),
+        total: resolvedEntries.length,
+        days: resolvedEntries.map(e => e.day),
         blocked: true,
         reason: initResult.message,
       });
@@ -204,13 +231,16 @@ async function executeTool(
 
     const { job, jobId, total, hint } = initResult;
     const progress = getBookingProgress(job);
-    const planSummary = `${total} meeting(s) — ${(entries ?? []).map(e => e.day).join(', ')}`;
+    const planSummary = state.lastMultiDayPlan
+      ? buildShortPlanSummary(state.lastMultiDayPlan)
+      : `${total} meeting(s)${summary ? ` — ${summary}` : ''}`;
 
     debug.log({
       type: 'booking_job_init',
       jobId,
       total,
-      days: (entries ?? []).map(e => e.day),
+      days: resolvedEntries.map(e => e.day),
+      overriddenFromPlan: overridden,
     });
 
     console.log(`[PERF][chat] executeTool init_booking_job: ${Date.now() - tExec}ms`);
@@ -219,14 +249,18 @@ async function executeTool(
         jobId,
         total,
         progress,
-        hint,
+        hint: overridden
+          ? `${hint} Server expanded to ${total} day(s) from the confirmed plan.`
+          : hint,
         startBookingRun: progress.pending > 0,
+        entriesOverridden: overridden,
       },
       stateUpdates: {
         bookingJob: job,
         awaitingConfirmation: false,
         bookingPlanConfirmed: true,
         confirmedPlanSummary: planSummary,
+        lastMultiDayPlan: null,
       },
     };
   }

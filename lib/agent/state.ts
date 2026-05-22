@@ -92,6 +92,7 @@ export function resetSlots(state: ConversationState): ConversationState {
     awaitingConfirmation: false,
     lastSearchParams: null,
     bookingJob: null,
+    lastMultiDayPlan: null,
     bookingPlanConfirmed: false,
     confirmedPlanSummary: null,
     cachedCalendar: null,

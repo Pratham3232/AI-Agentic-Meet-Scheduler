@@ -12,7 +12,9 @@ import {
   parseBookingDayRequest,
   resolveFirstWeekOfMonth,
   resolveLastWeekOfMonth,
+  resolveAllWeekdaysInMonth,
   resolveWeekdaysInRange,
+  filterFutureDays,
   formatDayListForDisplay,
   type BookingDayPattern,
 } from '@/lib/agent/booking-days';
@@ -71,15 +73,49 @@ export function resolvePlanDays(
   }
 
   if (pattern?.monthOffset !== undefined) {
+    const current = parseYearMonthFromNow(now, timezone);
+    const target = shiftYearMonthHelper(current.year, current.month, pattern.monthOffset);
+    const indices = pattern.weekdayIndices ?? MON_FRI;
+
+    if (
+      pattern.scope === 'fullMonth' ||
+      ((pattern.weekdaysOnly || pattern.weekdayIndices?.length) && !pattern.week)
+    ) {
+      return filterFutureDays(
+        resolveAllWeekdaysInMonth(target.year, target.month, timezone, indices),
+        timezone,
+        now
+      );
+    }
+
     const week = resolveFirstWeekOfMonth(pattern.monthOffset, timezone, now);
     if (pattern.weekdaysOnly || pattern.weekdayIndices?.length) {
-      const indices = pattern.weekdayIndices ?? MON_FRI;
       return resolveWeekdaysInRange(week.startDay, week.endDay, indices, timezone);
     }
     return week.days;
   }
 
   return days;
+}
+
+function parseYearMonthFromNow(now: Date, timezone: string): { year: number; month: number } {
+  const ym = formatInTimeZone(now, timezone, 'yyyy-MM');
+  const [y, m] = ym.split('-').map(Number);
+  return { year: y, month: m };
+}
+
+function shiftYearMonthHelper(year: number, month: number, offset: number): { year: number; month: number } {
+  let m = month + offset;
+  let y = year;
+  while (m > 12) {
+    m -= 12;
+    y += 1;
+  }
+  while (m < 1) {
+    m += 12;
+    y -= 1;
+  }
+  return { year: y, month: m };
 }
 
 export interface DayPlanEntry {
@@ -142,7 +178,8 @@ export async function planMultiDayBookings(
   const autoBookable: DayPlanEntry[] = [];
   const conflicts: DayPlanEntry[] = [];
 
-  for (const day of days.slice(0, 14)) {
+  const planDays = days.slice(0, 31);
+  for (const day of planDays) {
     const { start, end } = buildLocalSlotRange(day, hour, minute, durationMinutes, timezone);
     const requestedDisplay = formatTimeSlot({ start, end }, timezone);
     const available = await isSlotFree(start, end);
@@ -158,8 +195,11 @@ export async function planMultiDayBookings(
       continue;
     }
 
-    const dayStart = `${day}T${String(startH).padStart(2, '0')}:00:00`;
-    const dayEnd = `${day}T${String(endH).padStart(2, '0')}:00:00`;
+    const outsideWorkingHours = hour < startH || hour >= endH;
+    const searchStartH = outsideWorkingHours ? 0 : startH;
+    const searchEndH = outsideWorkingHours ? 24 : endH;
+    const dayStart = `${day}T${String(searchStartH).padStart(2, '0')}:00:00`;
+    const dayEnd = `${day}T${String(searchEndH).padStart(2, '0')}:00:00`;
     const boundsStart = fromZonedTime(dayStart, timezone).toISOString();
     const boundsEnd = fromZonedTime(dayEnd, timezone).toISOString();
 
@@ -205,10 +245,14 @@ export async function planMultiDayBookings(
     summary: `${autoBookable.length} auto, ${conflicts.length} conflicts`,
   });
 
+  const batchNote =
+    days.length > 5
+      ? ` ${days.length} weekday(s) total — booking runs in batches via progress UI after init.`
+      : '';
   const summary =
     conflicts.length === 0
-      ? `All ${autoBookable.length} day(s) are available at ${preferredTime}. Confirm once to book all.`
-      : `${autoBookable.length} of ${days.length} day(s) ready to book; ${conflicts.length} need your pick.`;
+      ? `All ${autoBookable.length} of ${days.length} day(s) are available at ${preferredTime}. Confirm once to book all.${batchNote}`
+      : `${autoBookable.length} of ${days.length} day(s) ready to book; ${conflicts.length} need your pick.${batchNote}`;
 
   const weekdayLabels = formatDayListForDisplay(days, timezone);
   const displayList = days.map((day, i) => {

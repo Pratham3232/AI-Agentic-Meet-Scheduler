@@ -37,6 +37,48 @@ describe('booking-days', () => {
     expect(days[4]).toBe('2026-06-05');
   });
 
+  test('next month weekdays resolves all Mon–Fri in June 2026 (not first week only)', () => {
+    const days = parseBookingDayRequest(
+      'book yoga next month weekdays 5am',
+      TZ,
+      TODAY
+    );
+    expect(days).not.toBeNull();
+    expect(days!.length).toBeGreaterThanOrEqual(20);
+    expect(days!.length).toBeLessThanOrEqual(23);
+    expect(days![0]).toBe('2026-06-01');
+    expect(days![days!.length - 1]).toBe('2026-06-30');
+    expect(days).not.toEqual([
+      '2026-06-01',
+      '2026-06-02',
+      '2026-06-03',
+      '2026-06-04',
+      '2026-06-05',
+    ]);
+  });
+
+  test('every day next month resolves all calendar days in June 2026', () => {
+    const days = parseBookingDayRequest(
+      'book yoga every day next month at 5am',
+      TZ,
+      TODAY
+    );
+    expect(days).toHaveLength(30);
+    expect(days![0]).toBe('2026-06-01');
+    expect(days![29]).toBe('2026-06-30');
+  });
+
+  test('this month weekdays excludes past days in May 2026', () => {
+    const days = parseBookingDayRequest(
+      'book yoga this month weekdays at 9am',
+      TZ,
+      TODAY
+    );
+    expect(days).not.toBeNull();
+    expect(days!.every(d => d >= '2026-05-21')).toBe(true);
+    expect(days!.some(d => d < '2026-05-21')).toBe(false);
+  });
+
   test('last week of july weekdays resolves Mon–Fri in July 2026', () => {
     const days = parseBookingDayRequest(
       'book meetings last week of july on weekdays at 9pm',
