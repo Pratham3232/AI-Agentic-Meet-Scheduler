@@ -153,7 +153,7 @@ export default function Home() {
         dc.send(
           JSON.stringify({
             type: 'session.update',
-            session: { instructions: base + block },
+            session: { type: 'realtime', instructions: base + block },
           })
         );
       }
@@ -267,7 +267,7 @@ export default function Home() {
         dc.send(
           JSON.stringify({
             type: 'session.update',
-            session: { instructions: base + block },
+            session: { type: 'realtime', instructions: base + block },
           })
         );
       }
