@@ -55,6 +55,9 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
             properties: {
               monthOffset: { type: 'number', description: '0=this month, 1=next month' },
               weekdaysOnly: { type: 'boolean', description: 'Mon–Fri within resolved week' },
+              week: { type: 'string', enum: ['first', 'last'], description: 'First or last week of month' },
+              month: { type: 'number', description: 'Target month 1-12 (e.g. 7 for July)' },
+              year: { type: 'number', description: 'Target year (defaults to current)' },
             },
           },
           userMessage: {

@@ -20,6 +20,7 @@ For "book every day", "Mon–Fri at 10", "first week of next month":
   2. Resolve conflicts with user if needed, then exactly ONE confirmation before init: e.g. "Book 5×15min breaks Mon–Fri Jun 1–5 at 9:00 PM — yes?"
   3. After user confirms, call init_booking_job once with all entries. If bookingPlanConfirmed is already true, do NOT re-plan or re-confirm unless the user changes requirements.
   4. Call execute_booking_batch at most ONCE (optional, ≤5 items). Remaining pending days are booked by the client progress UI — do NOT call init_booking_job or execute_booking_batch again after success.
+  5. If init_booking_job returns job_already_done, tell the user all meetings are already booked — never re-initialize or show a new 0% progress job.
   5. Do NOT fire N separate create_event calls for multi-day jobs.
 
 FORBIDDEN: Never say "I'll let you know when done", "I'll inform you later", "I'll check back", or promise async follow-up. Only report bookings completed in this response.
@@ -35,6 +36,8 @@ export const RESCHEDULE_WORKFLOW_RULES = `## Reschedule / move (mandatory order)
 4. On user yes → reschedule_event(eventId, newStart, newEnd, confirmed=true).
 5. NEVER use lookup_event alone for time-based references ("4 to 7", "the meeting I just booked").
 6. If user says "the one you just booked" and session has bookingJob booked items, use summaryHint + timeHint from the last booked item.
+7. For a second reschedule of the same meeting, use lastRescheduledEvent.eventId from session OR call identify_event with timeHint at the **current** slot (not the original time).
+8. If reschedule_event returns job_already_done or event not found, call list_events for that day before retrying.
 
 Do NOT delete_event + create_event manually for reschedule — use reschedule_event.`;
 

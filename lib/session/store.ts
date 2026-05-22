@@ -53,6 +53,7 @@ export function createInitialState(sessionId: string): ConversationState {
     cachedCalendar: null,
     calendarVersion: 0,
     pendingReschedule: null,
+    lastRescheduledEvent: null,
     slots: {
       duration: null,
       day: null,

@@ -36,4 +36,19 @@ describe('booking-days', () => {
     expect(days[0]).toBe('2026-06-01');
     expect(days[4]).toBe('2026-06-05');
   });
+
+  test('last week of july weekdays resolves Mon–Fri in July 2026', () => {
+    const days = parseBookingDayRequest(
+      'book meetings last week of july on weekdays at 9pm',
+      TZ,
+      new Date('2026-05-21T12:00:00Z')
+    );
+    expect(days).toEqual([
+      '2026-07-27',
+      '2026-07-28',
+      '2026-07-29',
+      '2026-07-30',
+      '2026-07-31',
+    ]);
+  });
 });

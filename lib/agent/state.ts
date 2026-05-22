@@ -97,6 +97,7 @@ export function resetSlots(state: ConversationState): ConversationState {
     cachedCalendar: null,
     calendarVersion: 0,
     pendingReschedule: null,
+    lastRescheduledEvent: null,
   };
 }
 

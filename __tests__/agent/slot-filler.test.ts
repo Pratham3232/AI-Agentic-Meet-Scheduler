@@ -14,6 +14,7 @@ const blank: ConversationState = {
   cachedCalendar: null,
   calendarVersion: 0,
   pendingReschedule: null,
+  lastRescheduledEvent: null,
   slots: {
     duration: null,
     day: null,

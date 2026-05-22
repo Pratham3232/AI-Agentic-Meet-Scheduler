@@ -3,19 +3,18 @@ import { formatInTimeZone } from 'date-fns-tz';
 import type { CalendarEvent, ConversationState } from '@/types';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import {
-  createEvent,
-  deleteEvent,
   getEventById,
   listEvents,
+  patchEvent,
 } from '@/lib/calendar/events';
 import { isSlotFree } from '@/lib/calendar/slot-search';
 import type { DebugLogger } from '@/lib/debug';
 import {
   findCachedEventById,
   getCachedEventsForRange,
-  invalidateEventCache,
   setPendingReschedule,
   updateEventCache,
+  upsertCachedEvent,
 } from '@/lib/agent/event-cache';
 
 export interface TimeHintRange {
@@ -60,6 +59,7 @@ export interface RescheduleSuccess {
   success: true;
   display: string;
   eventId: string;
+  hint?: string;
 }
 
 export interface RescheduleError {
@@ -342,6 +342,10 @@ export async function runRescheduleEvent(
     existing = await getEventById(eventId);
   }
 
+  if (!existing?.start?.dateTime && state?.lastRescheduledEvent) {
+    existing = await getEventById(state.lastRescheduledEvent.eventId);
+  }
+
   if (!existing?.start?.dateTime || !existing.end?.dateTime) {
     debug?.log({
       type: 'reschedule_execute',
@@ -443,53 +447,80 @@ export async function runRescheduleEvent(
     };
   }
 
+  const summary = existing.summary ?? 'Meeting';
+  const stableId = existing.id ?? eventId;
+
   try {
-    await deleteEvent(eventId);
-  } catch {
+    const patched = await patchEvent(stableId, newStartTime, newEndTime, summary);
+    const display = formatTimeSlot(
+      {
+        start: patched.start?.dateTime || newStartTime,
+        end: patched.end?.dateTime || newEndTime,
+      },
+      timezone
+    );
+    const day = formatInTimeZone(parseISO(newStartTime), timezone, 'yyyy-MM-dd');
+
     debug?.log({
       type: 'reschedule_execute',
-      eventId,
+      eventId: stableId,
+      confirmed,
+      success: true,
+    });
+
+    const stateUpdates: Partial<ConversationState> = state
+      ? (() => {
+          let next = upsertCachedEvent(
+            state,
+            stableId,
+            summary,
+            patched.start?.dateTime || newStartTime,
+            patched.end?.dateTime || newEndTime,
+            timezone
+          );
+          next = setPendingReschedule(next, null);
+          return {
+            cachedCalendar: next.cachedCalendar,
+            calendarVersion: next.calendarVersion,
+            pendingReschedule: null,
+            awaitingConfirmation: false,
+            lastRescheduledEvent: {
+              eventId: stableId,
+              summary,
+              start: patched.start?.dateTime || newStartTime,
+              end: patched.end?.dateTime || newEndTime,
+              display,
+              day,
+            },
+          };
+        })()
+      : { awaitingConfirmation: false };
+
+    return {
+      result: {
+        success: true,
+        display,
+        eventId: stableId,
+        hint: 'Use this same eventId for any further reschedule of this meeting.',
+      },
+      stateUpdates,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Patch failed';
+    debug?.log({
+      type: 'reschedule_execute',
+      eventId: stableId,
       confirmed,
       success: false,
-      error: 'Delete failed',
+      error: message,
     });
     return {
       result: {
         success: false,
-        error: 'Could not delete the original event (may already be removed).',
+        error: 'Could not reschedule the event. Call identify_event for the current time, then retry.',
+        hint: 'Use eventId from list_events or lastRescheduledEvent in session.',
       },
       stateUpdates: {},
     };
   }
-
-  const summary = existing.summary ?? 'Meeting';
-  const created = await createEvent(summary, newStartTime, newEndTime);
-  const display = formatTimeSlot(
-    { start: created.start.dateTime || newStartTime, end: created.end.dateTime || newEndTime },
-    timezone
-  );
-
-  debug?.log({
-    type: 'reschedule_execute',
-    eventId,
-    confirmed,
-    success: true,
-  });
-
-  const stateUpdates: Partial<ConversationState> = state
-    ? (() => {
-        const next = invalidateEventCache(state);
-        return {
-          cachedCalendar: next.cachedCalendar,
-          calendarVersion: next.calendarVersion,
-          pendingReschedule: next.pendingReschedule,
-          awaitingConfirmation: false,
-        };
-      })()
-    : { awaitingConfirmation: false };
-
-  return {
-    result: { success: true, display, eventId: created.id },
-    stateUpdates,
-  };
 }

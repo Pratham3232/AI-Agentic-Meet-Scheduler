@@ -140,8 +140,20 @@ export async function POST(req: NextRequest) {
 
     } else if (toolName === 'plan_multi_day_bookings') {
       const { durationMinutes, days, preferredTime, dayPattern, userMessage } = args;
+      const latestUser = [...state.conversationHistory]
+        .reverse()
+        .find((m: { role: string }) => m.role === 'user');
+      const resolvedUserMessage = userMessage ?? latestUser?.content;
       const plan = await planMultiDayBookings(
-        { durationMinutes, days, preferredTime, timezone, workingHours, dayPattern, userMessage },
+        {
+          durationMinutes,
+          days,
+          preferredTime,
+          timezone,
+          workingHours,
+          dayPattern,
+          userMessage: resolvedUserMessage,
+        },
         debug,
         now
       );
@@ -156,12 +168,14 @@ export async function POST(req: NextRequest) {
 
     } else if (toolName === 'init_booking_job') {
       const { entries, force } = args;
-      const initResult = initBookingJob(entries ?? [], timezone, state.bookingJob, force);
+      const initResult = await initBookingJob(entries ?? [], timezone, state.bookingJob, force);
       if ('error' in initResult) {
         result = {
           error: initResult.error,
           message: initResult.message,
           progress: initResult.progress,
+          hint: 'Booking already completed. Do not re-initialize.',
+          startBookingRun: false,
         };
       } else {
         const { job, jobId, total, hint } = initResult;
@@ -189,6 +203,19 @@ export async function POST(req: NextRequest) {
       if (!state.bookingJob) {
         result = {
           error: 'No active booking job. Call init_booking_job first.',
+        };
+      } else if (
+        state.bookingJob.status === 'completed' ||
+        (getBookingProgress(state.bookingJob).booked > 0 &&
+          getBookingProgress(state.bookingJob).pending === 0)
+      ) {
+        const progress = getBookingProgress(state.bookingJob);
+        result = {
+          error: 'job_already_done',
+          message: 'Booking already finished.',
+          progress,
+          done: true,
+          startBookingRun: false,
         };
       } else {
         const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;

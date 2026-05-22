@@ -12,6 +12,7 @@ import {
 import {
   buildCachedCalendarPromptBlock,
   buildPendingRescheduleBlock,
+  buildLastRescheduledBlock,
 } from './event-cache';
 
 function buildConversationContext(state: ConversationState): string {
@@ -175,6 +176,7 @@ ${state.bookingPlanConfirmed && state.confirmedPlanSummary ? `\n## Confirmed boo
 ${state.bookingJob?.status === 'completed' ? '\n## Booking job COMPLETE — do not call init_booking_job or execute_booking_batch again.' : ''}
 ${buildCachedCalendarPromptBlock(state)}
 ${buildPendingRescheduleBlock(state)}
+${buildLastRescheduledBlock(state)}
 
 ## Voice summary (REQUIRED)
 After your response, on a NEW LINE, write exactly:

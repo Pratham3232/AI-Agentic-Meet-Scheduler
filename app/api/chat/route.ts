@@ -126,12 +126,31 @@ async function executeTool(
       durationMinutes: number;
       days: string[];
       preferredTime: string;
-      dayPattern?: { monthOffset?: number; weekdaysOnly?: boolean };
+      dayPattern?: {
+        monthOffset?: number;
+        weekdaysOnly?: boolean;
+        week?: 'first' | 'last';
+        month?: number;
+        year?: number;
+      };
       userMessage?: string;
     };
 
+    const latestUser = [...state.conversationHistory]
+      .reverse()
+      .find(m => m.role === 'user');
+    const resolvedUserMessage = userMessage ?? latestUser?.content;
+
     const plan = await planMultiDayBookings(
-      { durationMinutes, days, preferredTime, timezone, workingHours, dayPattern, userMessage },
+      {
+        durationMinutes,
+        days,
+        preferredTime,
+        timezone,
+        workingHours,
+        dayPattern,
+        userMessage: resolvedUserMessage,
+      },
       debug
     );
 
@@ -154,7 +173,7 @@ async function executeTool(
       force?: boolean;
     };
 
-    const initResult = initBookingJob(
+    const initResult = await initBookingJob(
       entries ?? [],
       timezone,
       state.bookingJob,
@@ -176,7 +195,8 @@ async function executeTool(
           error: initResult.error,
           message: initResult.message,
           progress: initResult.progress,
-          hint: 'Booking already completed. Do not re-initialize.',
+          hint: 'Booking already completed. Do not re-initialize. Tell the user all meetings are booked.',
+          startBookingRun: false,
         },
         stateUpdates: {},
       };
@@ -218,6 +238,24 @@ async function executeTool(
         toolResult: {
           error: 'No active booking job. Call init_booking_job first.',
           hint: 'Use plan_multi_day_bookings, confirm with user, then init_booking_job.',
+        },
+        stateUpdates: {},
+      };
+    }
+
+    const existingProgress = getBookingProgress(state.bookingJob);
+    if (
+      state.bookingJob.status === 'completed' ||
+      (existingProgress.booked > 0 && existingProgress.pending === 0)
+    ) {
+      return {
+        toolResult: {
+          error: 'job_already_done',
+          message: 'Booking job already finished.',
+          progress: existingProgress,
+          done: true,
+          hint: 'All meetings are booked. Do not call execute_booking_batch again.',
+          startBookingRun: false,
         },
         stateUpdates: {},
       };

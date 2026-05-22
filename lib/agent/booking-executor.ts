@@ -92,29 +92,121 @@ async function reconcilePendingItem(
   return { item, action: 'pending' };
 }
 
-export function initBookingJob(
-  entries: BookingJobEntryInput[],
-  timezone: string = 'UTC',
-  existingJob?: BookingJob | null,
-  force?: boolean
-): InitBookingJobResult | InitBookingJobBlocked {
-  const fp = entriesFingerprint(entries);
+async function entriesAlreadyOnCalendar(entries: BookingJobEntryInput[]): Promise<boolean> {
+  if (entries.length === 0) return false;
+  const rangeStart = entries.reduce(
+    (min, e) => (e.start < min ? e.start : min),
+    entries[0].start
+  );
+  const rangeEnd = entries.reduce(
+    (max, e) => (e.end > max ? e.end : max),
+    entries[0].end
+  );
+  const calendarEvents = await listEvents(rangeStart, rangeEnd, undefined, undefined, 50);
+  return entries.every(e => {
+    const pseudo: BookingJobItem = {
+      day: e.day,
+      start: e.start,
+      end: e.end,
+      summary: e.summary,
+      status: 'pending',
+    };
+    return !!findMatchingEvent(pseudo, calendarEvents);
+  });
+}
 
-  if (existingJob && !force && existingJob.entriesFingerprint === fp) {
+function completedProgressForEntries(
+  entries: BookingJobEntryInput[],
+  timezone: string,
+  existingJob?: BookingJob | null
+): BookingProgressSnapshot {
+  if (existingJob) {
     const progress = getBookingProgress(existingJob);
     if (
       existingJob.status === 'completed' ||
-      (progress.booked > 0 && progress.pending === 0) ||
-      existingJob.status === 'in_progress'
+      (progress.booked > 0 && progress.pending === 0)
     ) {
+      return progress;
+    }
+  }
+
+  const items: BookingJobItem[] = entries.map(e => ({
+    day: e.day,
+    start: e.start,
+    end: e.end,
+    summary: e.summary,
+    status: 'booked',
+    display: formatTimeSlot({ start: e.start, end: e.end }, timezone),
+  }));
+
+  const job: BookingJob = {
+    id: existingJob?.id ?? 'completed',
+    status: 'completed',
+    items,
+    updatedAt: new Date().toISOString(),
+    entriesFingerprint: entriesFingerprint(entries),
+  };
+  return getBookingProgress(job);
+}
+
+/** Server-side gate: block re-init after success or when calendar already has the events. */
+export async function evaluateInitBookingBlock(
+  entries: BookingJobEntryInput[],
+  timezone: string,
+  existingJob?: BookingJob | null,
+  force?: boolean
+): Promise<InitBookingJobBlocked | null> {
+  if (force || entries.length === 0) return null;
+
+  if (existingJob) {
+    const progress = getBookingProgress(existingJob);
+    if (existingJob.status === 'completed') {
+      return {
+        error: 'job_already_done',
+        message: `All ${progress.total} meeting(s) are already booked. Do not call init_booking_job again.`,
+        progress,
+      };
+    }
+    if (progress.booked > 0 && progress.pending === 0) {
+      return {
+        error: 'job_already_done',
+        message: `All ${progress.booked} meeting(s) are already booked. Do not call init_booking_job again.`,
+        progress,
+      };
+    }
+    const fp = entriesFingerprint(entries);
+    if (existingJob.entriesFingerprint === fp && existingJob.status === 'in_progress') {
       return {
         error: 'job_already_done',
         message:
-          'A booking job for these days already exists or finished. Do not re-initialize unless the user asks to start over (force: true).',
+          'A booking job for these days is already in progress. Wait for progress UI to finish.',
         progress,
       };
     }
   }
+
+  if (await entriesAlreadyOnCalendar(entries)) {
+    const progress = completedProgressForEntries(entries, timezone, existingJob);
+    return {
+      error: 'job_already_done',
+      message: `All ${entries.length} slot(s) already exist on the calendar. Do not re-initialize.`,
+      progress,
+    };
+  }
+
+  return null;
+}
+
+export async function initBookingJob(
+  entries: BookingJobEntryInput[],
+  timezone: string = 'UTC',
+  existingJob?: BookingJob | null,
+  force?: boolean
+): Promise<InitBookingJobResult | InitBookingJobBlocked> {
+  const blocked = await evaluateInitBookingBlock(entries, timezone, existingJob, force);
+  if (blocked) return blocked;
+
+  const fp = entriesFingerprint(entries);
 
   const items: BookingJobItem[] = entries.map(e => ({
     day: e.day,

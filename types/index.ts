@@ -70,6 +70,15 @@ export interface PendingReschedule {
   newDisplay?: string;
 }
 
+export interface LastRescheduledEvent {
+  eventId: string;
+  summary: string;
+  start: string;
+  end: string;
+  display: string;
+  day: string;
+}
+
 export interface ConversationState {
   sessionId: string;
   bookingJob: BookingJob | null;
@@ -78,6 +87,7 @@ export interface ConversationState {
   cachedCalendar: CachedCalendarSnapshot | null;
   calendarVersion: number;
   pendingReschedule: PendingReschedule | null;
+  lastRescheduledEvent: LastRescheduledEvent | null;
   slots: {
     duration: number | null;       // minutes
     day: string | null;            // ISO date string

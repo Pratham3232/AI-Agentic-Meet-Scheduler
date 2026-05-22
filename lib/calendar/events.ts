@@ -86,6 +86,32 @@ export async function listEvents(
   return items;
 }
 
+export async function patchEvent(
+  eventId: string,
+  startTime: string,
+  endTime: string,
+  summary?: string,
+  calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'
+): Promise<CalendarEvent> {
+  const t0 = Date.now();
+  const calendar = await getCalendarClient();
+
+  const requestBody: Record<string, unknown> = {
+    start: { dateTime: startTime, timeZone: 'UTC' },
+    end: { dateTime: endTime, timeZone: 'UTC' },
+  };
+  if (summary) requestBody.summary = summary;
+
+  const response = await calendar.events.patch({
+    calendarId,
+    eventId,
+    requestBody,
+  });
+
+  console.log(`[PERF][calendar] patchEvent: ${Date.now() - t0}ms`);
+  return response.data as CalendarEvent;
+}
+
 export async function deleteEvent(
   eventId: string,
   calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary'

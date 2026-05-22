@@ -18,6 +18,7 @@ describe('Agent State Management', () => {
     cachedCalendar: null,
     calendarVersion: 0,
     pendingReschedule: null,
+    lastRescheduledEvent: null,
     slots: {
       duration: null,
       day: null,

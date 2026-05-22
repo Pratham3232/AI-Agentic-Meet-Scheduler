@@ -1,11 +1,29 @@
-import { addDays, getDay } from 'date-fns';
+import { addDays, getDay, getDaysInMonth, startOfWeek, endOfWeek } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 
 export interface BookingDayPattern {
   monthOffset?: number;
   weekdaysOnly?: boolean;
   weekdayIndices?: number[];
+  week?: 'first' | 'last';
+  month?: number;
+  year?: number;
 }
+
+const MONTH_NAMES: Record<string, number> = {
+  january: 1, jan: 1,
+  february: 2, feb: 2,
+  march: 3, mar: 3,
+  april: 4, apr: 4,
+  may: 5,
+  june: 6, jun: 6,
+  july: 7, jul: 7,
+  august: 8, aug: 8,
+  september: 9, sep: 9, sept: 9,
+  october: 10, oct: 10,
+  november: 11, nov: 11,
+  december: 12, dec: 12,
+};
 
 function isoDayInTz(date: Date, timezone: string): string {
   return formatInTimeZone(date, timezone, 'yyyy-MM-dd');
@@ -56,6 +74,31 @@ export function resolveFirstWeekOfMonth(
   };
 }
 
+/** Mon–Sun week that contains the last calendar day of the month. */
+export function resolveLastWeekOfMonth(
+  year: number,
+  month: number,
+  timezone: string
+): { startDay: string; endDay: string; days: string[] } {
+  const lastDayNum = getDaysInMonth(monthAnchor(year, month, 1, timezone));
+  const monthEnd = monthAnchor(year, month, lastDayNum, timezone);
+  const weekStart = startOfWeek(monthEnd, { weekStartsOn: 1 });
+  const weekEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
+
+  const days: string[] = [];
+  let cur = weekStart;
+  while (cur <= weekEnd) {
+    days.push(isoDayInTz(cur, timezone));
+    cur = addDays(cur, 1);
+  }
+
+  return {
+    startDay: days[0],
+    endDay: days[days.length - 1],
+    days,
+  };
+}
+
 export function resolveWeekdaysInRange(
   startDay: string,
   endDay: string,
@@ -77,6 +120,21 @@ export function resolveWeekdaysInRange(
 /** Mon=1 … Fri=5 in getDay: Monday=1, Friday=5 */
 const MON_FRI = [1, 2, 3, 4, 5];
 
+function parseNamedMonth(lower: string, today: Date, timezone: string): { year: number; month: number } | null {
+  for (const [name, num] of Object.entries(MONTH_NAMES)) {
+    if (new RegExp(`\\b${name}\\b`).test(lower)) {
+      const nowYm = parseYearMonth(formatInTimeZone(today, timezone, 'yyyy-MM'));
+      let year = nowYm.year;
+      if (num < nowYm.month && !/\bnext year\b/.test(lower)) {
+        year += 1;
+      }
+      if (/\bnext year\b/.test(lower)) year = nowYm.year + 1;
+      return { year, month: num };
+    }
+  }
+  return null;
+}
+
 export function parseBookingDayRequest(
   message: string,
   timezone: string,
@@ -90,11 +148,36 @@ export function parseBookingDayRequest(
     null;
 
   const wantsFirstWeek = /\bfirst week\b/.test(lower);
+  const wantsLastWeek = /\blast week\b/.test(lower);
   const wantsWeekdays =
     /\bmonday\s*(?:through|to|-)\s*friday\b/.test(lower) ||
     /\bmon\s*[-–]\s*fri\b/i.test(lower) ||
     /\bevery weekday\b/.test(lower) ||
     /\bweekdays?\b/.test(lower);
+
+  const namedMonth = parseNamedMonth(lower, today, timezone);
+
+  if (wantsLastWeek && namedMonth) {
+    const week = resolveLastWeekOfMonth(namedMonth.year, namedMonth.month, timezone);
+    if (wantsWeekdays) {
+      const weekdays = resolveWeekdaysInRange(week.startDay, week.endDay, MON_FRI, timezone);
+      const monthPrefix = `${namedMonth.year}-${String(namedMonth.month).padStart(2, '0')}`;
+      return weekdays.filter(d => d.startsWith(monthPrefix));
+    }
+    return week.days.filter(d => d.startsWith(`${namedMonth.year}-${String(namedMonth.month).padStart(2, '0')}`));
+  }
+
+  if (wantsLastWeek && monthOffset !== null) {
+    const current = parseYearMonth(formatInTimeZone(today, timezone, 'yyyy-MM'));
+    const target = shiftYearMonth(current.year, current.month, monthOffset);
+    const week = resolveLastWeekOfMonth(target.year, target.month, timezone);
+    if (wantsWeekdays) {
+      const weekdays = resolveWeekdaysInRange(week.startDay, week.endDay, MON_FRI, timezone);
+      const monthPrefix = `${target.year}-${String(target.month).padStart(2, '0')}`;
+      return weekdays.filter(d => d.startsWith(monthPrefix));
+    }
+    return week.days;
+  }
 
   if (wantsFirstWeek && monthOffset !== null && wantsWeekdays) {
     const week = resolveFirstWeekOfMonth(monthOffset, timezone, today);

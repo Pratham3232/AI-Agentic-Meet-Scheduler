@@ -11,10 +11,12 @@ import { listEvents } from '@/lib/calendar/events';
 import {
   parseBookingDayRequest,
   resolveFirstWeekOfMonth,
+  resolveLastWeekOfMonth,
   resolveWeekdaysInRange,
   formatDayListForDisplay,
   type BookingDayPattern,
 } from '@/lib/agent/booking-days';
+import { formatInTimeZone } from 'date-fns-tz';
 import { DebugLogger } from '@/lib/debug';
 import { WorkingHours } from '@/types';
 import { parseISO } from 'date-fns';
@@ -44,6 +46,30 @@ export function resolvePlanDays(
   }
 
   const pattern = options?.dayPattern;
+  if (pattern?.week === 'last' && pattern.month) {
+    const year =
+      pattern.year ??
+      parseInt(formatInTimeZone(now, timezone, 'yyyy'), 10);
+    const week = resolveLastWeekOfMonth(year, pattern.month, timezone);
+    const indices = pattern.weekdayIndices ?? (pattern.weekdaysOnly ? MON_FRI : undefined);
+    if (indices?.length) {
+      const weekdays = resolveWeekdaysInRange(week.startDay, week.endDay, indices, timezone);
+      const monthPrefix = `${year}-${String(pattern.month).padStart(2, '0')}`;
+      return weekdays.filter(d => d.startsWith(monthPrefix));
+    }
+    const monthPrefix = `${year}-${String(pattern.month).padStart(2, '0')}`;
+    return week.days.filter(d => d.startsWith(monthPrefix));
+  }
+
+  if (pattern?.week === 'first' && pattern.monthOffset !== undefined) {
+    const week = resolveFirstWeekOfMonth(pattern.monthOffset, timezone, now);
+    if (pattern.weekdaysOnly || pattern.weekdayIndices?.length) {
+      const indices = pattern.weekdayIndices ?? MON_FRI;
+      return resolveWeekdaysInRange(week.startDay, week.endDay, indices, timezone);
+    }
+    return week.days;
+  }
+
   if (pattern?.monthOffset !== undefined) {
     const week = resolveFirstWeekOfMonth(pattern.monthOffset, timezone, now);
     if (pattern.weekdaysOnly || pattern.weekdayIndices?.length) {

@@ -24,6 +24,20 @@ type Message = {
 };
 type WorkingHours = { startHour: number; endHour: number };
 
+function shouldApplyBookingProgress(
+  current: BookingProgressSnapshot | null,
+  next: BookingProgressSnapshot
+): boolean {
+  if (!current) return true;
+  if (current.total > 0 && current.booked === current.total && next.pending > 0) {
+    return false;
+  }
+  if (current.status === 'completed' && next.status === 'in_progress') {
+    return false;
+  }
+  return true;
+}
+
 function loadWorkingHours(): WorkingHours {
   if (typeof window === 'undefined') return { startHour: 9, endHour: 17 };
   try {
@@ -123,7 +137,9 @@ export default function Home() {
                 percent: payload.percent ?? 0,
                 items: payload.items ?? [],
               };
-              setBookingProgress(snap);
+              setBookingProgress(prev =>
+                shouldApplyBookingProgress(prev, snap) ? snap : prev
+              );
               setMessages(prev => {
                 const idx = prev.findIndex(m => m.role === 'assistant' && m.bookingProgress);
                 const progressMsg: Message = {
@@ -220,9 +236,15 @@ export default function Home() {
         (toolName === 'init_booking_job' || toolName === 'execute_booking_batch') &&
         data.result?.progress
       ) {
-        pendingBookingRef.current = data.result.progress;
-        setBookingProgress(data.result.progress);
-        if (data.result.startBookingRun && data.sessionId) {
+        const next = data.result.progress as BookingProgressSnapshot;
+        setBookingProgress(prev => {
+          const apply =
+            data.result.error === 'job_already_done' ||
+            shouldApplyBookingProgress(prev, next);
+          if (apply) pendingBookingRef.current = next;
+          return apply ? next : prev;
+        });
+        if (data.result.startBookingRun && data.sessionId && !data.result.error) {
           void runBookingJob(data.sessionId);
         }
       } else if (toolName === 'create_event' && data.result?.success === false) {
