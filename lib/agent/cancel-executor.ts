@@ -32,6 +32,7 @@ export interface ExecuteCancelBatchResult {
   failedThisBatch: number;
   done: boolean;
   hint: string;
+  failedDetails: Array<{ eventId: string; reason: string }>;
 }
 
 const DEFAULT_BATCH_SIZE = 5;
@@ -189,6 +190,7 @@ export async function executeCancelBatch(
       failedThisBatch: 0,
       done: true,
       hint: 'Cancel job already finished.',
+      failedDetails: [],
     };
   }
 
@@ -196,6 +198,7 @@ export async function executeCancelBatch(
   let cancelledThisBatch = 0;
   let failedThisBatch = 0;
   let processed = 0;
+  const failedDetails: Array<{ eventId: string; reason: string }> = [];
 
   for (let i = 0; i < items.length && processed < batchSize; i++) {
     if (items[i].status !== 'pending') continue;
@@ -219,7 +222,10 @@ export async function executeCancelBatch(
         error: gone ? undefined : message,
       };
       if (gone) cancelledThisBatch++;
-      else failedThisBatch++;
+      else {
+        failedThisBatch++;
+        failedDetails.push({ eventId: item.eventId, reason: message });
+      }
     }
   }
 
@@ -240,8 +246,9 @@ export async function executeCancelBatch(
     done: finalProgress.pending === 0,
     hint:
       finalProgress.pending === 0
-        ? 'All events processed. Do not call init_cancel_job or delete_event again.'
-        : 'More events pending — client SSE will continue.',
+        ? `All ${finalProgress.cancelled} event(s) cancelled. Do not call init_cancel_job or delete_event again. Tell user: "All events cancelled."`
+        : `Cancellation started — ${finalProgress.cancelled} cancelled so far, ${finalProgress.pending} remaining will complete automatically via the progress bar. Tell user: "Cancellation started — the rest will complete automatically."`,
+    failedDetails,
   };
 }
 

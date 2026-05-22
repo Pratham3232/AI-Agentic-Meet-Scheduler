@@ -279,6 +279,7 @@ export async function POST(req: NextRequest) {
           done: batchResult.done,
           hint: batchResult.hint,
           startBookingRun: !batchResult.done && batchResult.progress.pending > 0,
+          failedDetails: batchResult.failedDetails.length > 0 ? batchResult.failedDetails : undefined,
         };
       }
 
@@ -343,6 +344,7 @@ export async function POST(req: NextRequest) {
           done: batchResult.done,
           hint: batchResult.hint,
           startCancelRun: !batchResult.done && batchResult.progress.pending > 0,
+          failedDetails: batchResult.failedDetails.length > 0 ? batchResult.failedDetails : undefined,
         };
       }
 
@@ -469,16 +471,24 @@ export async function POST(req: NextRequest) {
         : { found: false };
 
     } else if (toolName === 'delete_event') {
-      const { eventId } = args;
+      const { eventId, eventSummary } = args;
+      const label = eventSummary || eventId;
       try {
         await deleteEvent(eventId);
         const invalidated = invalidateEventCache(state);
         state.cachedCalendar = invalidated.cachedCalendar;
         state.calendarVersion = invalidated.calendarVersion;
         state.pendingReschedule = invalidated.pendingReschedule;
-        result = { success: true, deletedEventId: eventId };
+        result = {
+          success: true,
+          deletedEventId: eventId,
+          message: `Successfully deleted "${label}". The event has been removed from the calendar.`,
+        };
       } catch {
-        result = { success: false, error: 'Event not found or already deleted.' };
+        result = {
+          success: false,
+          error: `Failed to delete event (${eventId}). The event was not found or was already deleted.`,
+        };
       }
 
     } else {

@@ -183,12 +183,114 @@ function parseNamedMonth(lower: string, today: Date, timezone: string): { year: 
   return null;
 }
 
+function parseExplicitDate(lower: string, today: Date): string | null {
+  const MONTH_LIST = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  for (let m = 0; m < MONTH_LIST.length; m++) {
+    const name = MONTH_LIST[m];
+    if (!lower.includes(name)) continue;
+    const pat = new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:of\\s*)?${name}|${name}\\s*(\\d{1,2})`);
+    const match = lower.match(pat);
+    if (match) {
+      const dayNum = parseInt(match[1] ?? match[2]);
+      const year = today.getFullYear();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const candidate = new Date(year, m, dayNum);
+      if (candidate < today) candidate.setFullYear(year + 1);
+      return `${candidate.getFullYear()}-${pad(candidate.getMonth() + 1)}-${pad(candidate.getDate())}`;
+    }
+  }
+  const isoMatch = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (isoMatch) return isoMatch[1];
+  return null;
+}
+
+/** Narrow check for chat auto-search skip only (Mon–Fri range phrases). */
+export function isMultiDayRangeMessage(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    /\bmonday\s*(?:through|to|-)\s*friday\b/i.test(lower) ||
+    /\bnext\s+monday\b[\s\S]*\bfriday\b/i.test(lower)
+  );
+}
+
+/** Upcoming Mon–Fri week starting at next Monday in the user's timezone. */
+function resolveNextMondayToFridayWeek(
+  timezone: string,
+  today: Date,
+  forceNextMonday: boolean
+): string[] {
+  const todayIso = formatInTimeZone(today, timezone, 'yyyy-MM-dd');
+  const anchor = fromZonedTime(`${todayIso}T12:00:00`, timezone);
+  const dow = parseInt(formatInTimeZone(anchor, timezone, 'i'), 10); // 1=Mon … 7=Sun
+  let daysUntilMonday: number;
+  if (dow === 1) {
+    daysUntilMonday = forceNextMonday ? 7 : 0;
+  } else if (dow === 7) {
+    daysUntilMonday = 1;
+  } else {
+    daysUntilMonday = 8 - dow;
+  }
+  const monday = addDays(anchor, daysUntilMonday);
+  const days = Array.from({ length: 5 }, (_, i) =>
+    isoDayInTz(addDays(monday, i), timezone)
+  );
+  return filterFutureDays(days, timezone, today);
+}
+
+function tryParseMondayToFridayRange(
+  lower: string,
+  timezone: string,
+  today: Date
+): string[] | null {
+  const hasNextMonday =
+    /\bnext\s+monday\b/i.test(lower) && /\b(?:next\s+)?friday\b/i.test(lower);
+  const hasMonToFri = /\bmonday\s*(?:through|to|-)\s*friday\b/i.test(lower);
+  if (!hasNextMonday && !hasMonToFri) return null;
+  if (
+    /\b(?:next|this)\s+month\b/.test(lower) ||
+    /\bfirst week\b/.test(lower) ||
+    /\blast week\b/.test(lower)
+  ) {
+    return null;
+  }
+  return resolveNextMondayToFridayWeek(timezone, today, hasNextMonday);
+}
+
 export function parseBookingDayRequest(
   message: string,
   timezone: string,
   today: Date = new Date()
 ): string[] | null {
   const lower = message.toLowerCase();
+
+  const monFriWeek = tryParseMondayToFridayRange(lower, timezone, today);
+  if (monFriWeek && monFriWeek.length > 0) return monFriWeek;
+
+  const startingFromMatch = lower.match(/\b(?:starting|start|from|beginning)\s+(?:from\s+)?(?:on\s+)?/);
+  if (startingFromMatch) {
+    const explicitDate = parseExplicitDate(lower, today);
+    if (explicitDate) {
+      const countMatch = lower.match(/\b(\d+)\s+(?:days?|meetings?|sessions?)\b/);
+      const wantsWeekdays = /\bweekdays?\b|\bmon(?:day)?\s*(?:through|to|-)\s*fri(?:day)?\b|\bmon\s*[-–]\s*fri\b/i.test(lower);
+      const count = countMatch ? Math.min(parseInt(countMatch[1], 10), 31) : (wantsWeekdays ? 5 : 5);
+      const indices = wantsWeekdays ? [1, 2, 3, 4, 5] : undefined;
+      const days: string[] = [];
+      let cur = fromZonedTime(`${explicitDate}T12:00:00`, timezone);
+      while (days.length < count) {
+        const iso = isoDayInTz(cur, timezone);
+        if (iso >= explicitDate) {
+          if (indices) {
+            if (indices.includes(getDay(cur))) days.push(iso);
+          } else {
+            days.push(iso);
+          }
+        }
+        cur = addDays(cur, 1);
+        if (days.length === 0 && iso > explicitDate) break;
+      }
+      if (days.length > 0) return days;
+    }
+  }
 
   const monthOffset =
     /\bnext month\b/.test(lower) ? 1 :
@@ -272,7 +374,7 @@ export function parseBookingDayRequest(
 
 export function formatDayListForDisplay(days: string[], timezone: string): string[] {
   return days.map(day => {
-    const d = new Date(`${day}T12:00:00Z`);
+    const d = fromZonedTime(`${day}T12:00:00`, timezone);
     const label = formatInTimeZone(d, timezone, 'EEEE, MMMM d');
     return `${label} (${day})`;
   });

@@ -147,6 +147,15 @@ After deploying, add your production redirect URI:
 1. Go to Google Cloud Console > APIs & Services > Credentials
 2. Edit your OAuth client
 3. Add authorized redirect URI: `https://your-app.vercel.app/api/auth/callback`
+4. Keep `http://localhost:3000/api/auth/callback` for local development
+
+### Publishing the App for Public Access
+
+To allow any Google user to sign in (not just test users):
+1. Go to Google Cloud Console > APIs & Services > OAuth consent screen
+2. Click "Publish App" → Confirm
+3. Users will see an "unverified app" warning but can proceed via Advanced → "Go to <app name> (unsafe)"
+4. Scopes used are `calendar.events`, `calendar.readonly`, `userinfo.email` (all "sensitive", not "restricted") — no Google verification required
 
 ### Function Timeouts
 
@@ -155,6 +164,8 @@ Timeouts are configured via `export const maxDuration` in each route file (App R
 - `/api/realtime/tools` — 15s (calendar tool execution)
 - `/api/realtime/session` — 10s (OpenAI token mint)
 - `/api/auth/callback` — 10s (Google token exchange)
+- `/api/booking/run` — SSE-streamed batch execution
+- `/api/cancel/run` — SSE-streamed batch execution
 
 ### Notes
 
@@ -163,13 +174,22 @@ Timeouts are configured via `export const maxDuration` in each route file (App R
 - Edge middleware runs at Vercel's edge locations for low-latency auth verification
 - Redis stores both session state (2-hour TTL) and OAuth tokens (30-day TTL)
 - `vercel.json` only sets `{"framework": "nextjs"}` — all other config is in-code
+- Batch booking and cancel SSE routes handle their own progress streaming
 
 ## Testing
 
-Run unit tests:
+Run unit tests (17 test suites):
 ```bash
 npm test
 ```
+
+Test suites cover:
+- State management, slot extraction, booking job lifecycle
+- Booking context reconciliation, day resolution, SSE lock management
+- Cancel job lifecycle, event identification, reschedule flow
+- Event cache operations, multi-day planner, plan building
+- Slot availability checks, client progress handler
+- Realtime voice response gating, day rail component
 
 Run integration tests (requires valid credentials):
 ```bash
@@ -180,21 +200,32 @@ npm run test:integration
 
 **Redirected to login in a loop**
 - Ensure `SESSION_SECRET` is set and matches between restarts
-- Check that your Google OAuth consent screen has your email as a test user
+- Check that your Google OAuth consent screen has your email as a test user (or app is published)
 - Verify the redirect URI in Google Cloud Console matches exactly: `<NEXT_PUBLIC_APP_URL>/api/auth/callback`
+
+**Google OAuth 400 error for new users**
+- Verify `NEXT_PUBLIC_APP_URL` matches your actual deployed URL exactly (no trailing slash)
+- Ensure OAuth scopes are `calendar.events` + `calendar.readonly` + `userinfo.email` (not the restricted `calendar` scope)
+- If the app is in "Testing" status, only test users can sign in — publish the app for public access
 
 **"Google OAuth2 credentials not configured"**
 - Ensure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set
 - For dev mode without OAuth: set `GOOGLE_REFRESH_TOKEN` and leave `SESSION_SECRET` unset
 
+**Chat shown without login in incognito/production**
+- Ensure `SESSION_SECRET` is set in the **Production** environment (not just Development)
+- Verify via `vercel env ls` that it shows for Production
+- Redeploy after adding: `vercel --prod`
+
 **"Failed to get session" / Redis errors**
 - Check Upstash credentials
 - Ensure Redis database is active
 
-**"Failed to fetch free slots"**
+**"Failed to fetch free slots" / "The specified time range is empty"**
 - Verify Calendar API is enabled in Google Cloud Console
 - Check that the user granted calendar permissions during OAuth
 - For dev mode: ensure refresh token is valid (re-run `npm run auth:google`)
+- If using working hours where evening window is empty (e.g., end hour = 17), the system auto-falls back to default time windows
 
 **Voice connection failed / 404 on model**
 - The voice pipeline uses `gpt-realtime-mini`. Ensure your OpenAI API key has access to the Realtime API.
@@ -203,4 +234,9 @@ npm run test:integration
 - Run `rm -rf .next` and restart the dev server
 
 **Agent reports wrong date (e.g., yesterday's date)**
-- This was fixed — all date computation now uses timezone-aware `formatInTimeZone()`. If you see this, ensure your browser is sending the correct timezone.
+- All date computation uses timezone-aware `formatInTimeZone()`. Ensure your browser is sending the correct timezone.
+
+**Batch booking/cancel not completing**
+- Check that SSE routes (`/api/booking/run`, `/api/cancel/run`) are accessible
+- Verify the booking/cancel job was initialized before the batch execute call
+- Check browser console for SSE connection errors

@@ -34,6 +34,37 @@ function mockPlan(overrides?: Partial<PlanMultiDayResult>): PlanMultiDayResult {
 }
 
 describe('multi-day-plan', () => {
+  test('resolveInitEntries uses canonical when same length but wrong fingerprint', () => {
+    const plan = buildLastMultiDayPlan(
+      mockPlan({
+        totalDays: 5,
+        days: ['2026-05-25', '2026-05-26', '2026-05-27', '2026-05-28', '2026-05-29'],
+        autoBookable: ['2026-05-25', '2026-05-26', '2026-05-27', '2026-05-28', '2026-05-29'].map(
+          day => ({
+            day,
+            status: 'auto_bookable' as const,
+            start: `${day}T23:00:00.000Z`,
+            end: `${day}T23:05:00.000Z`,
+            display: `${day} 7:00 PM`,
+          })
+        ),
+        weekdayLabels: [],
+        displayList: [],
+      }),
+      '7:00 PM'
+    );
+    const wrongDays = ['2026-05-26', '2026-05-27', '2026-05-28', '2026-05-29', '2026-05-30'];
+    const llm = wrongDays.map(day => ({
+      day,
+      start: `${day}T23:00:00.000Z`,
+      end: `${day}T23:05:00.000Z`,
+      summary: 'Meeting',
+    }));
+    const { entries, overridden } = resolveInitEntries(llm, plan);
+    expect(overridden).toBe(true);
+    expect(entries.map(e => e.day)).toEqual(plan.days);
+  });
+
   test('resolveInitEntries expands short LLM list to canonical plan', () => {
     const plan = buildLastMultiDayPlan(mockPlan(), '5:00 AM');
     const llm = plan.initEntries.slice(0, 5);

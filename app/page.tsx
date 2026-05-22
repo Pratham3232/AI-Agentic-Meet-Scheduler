@@ -656,7 +656,7 @@ ${PROXIMITY_SLOT_RULES}
 3. Once you have what you need, call the right tool immediately.
 4. After a search: present up to 3 slots as a numbered list. Say the day clearly, then the time.
 5. After listing slots: ask "Which one works for you?" — wait for confirmation before booking.
-6. On confirmation: call create_event with EXACT ISO start/end times from the tool result.
+6. On confirmation: for multi-day/batch (see MULTI_DAY_BOOKING_RULES above), use init_booking_job + execute_booking_batch — not create_event per day. For single-day only, call create_event with EXACT ISO start/end from the tool result.
 7. Meeting title: if user didn't provide one, default to "Meeting".
 8. After booking: confirm the event name, day, and time in one sentence.
 9. If the user changes their mind mid-flow, adapt.

@@ -21,10 +21,10 @@ When the user names a specific time, alternatives are sorted nearest-first (e.g.
 Do NOT re-order slots chronologically from the start of the day.`;
 
 export const MULTI_DAY_BOOKING_RULES = `## Multi-day / batch booking (CRITICAL)
-For "every weekday next month", "daily at 5 AM", "Mon–Fri at 10", or "first week of next month":
-  1. Call plan_multi_day_bookings ONCE with durationMinutes, preferredTime (exact user time, e.g. "5:00 AM"), dayPattern (monthOffset: 1 + weekdaysOnly for ALL weekdays in next month; week: "first" only for "first week"), OR pass userMessage so the server resolves canonical ISO days[]. Use returned days[] length — full month is ~20+ weekdays, NOT just 5 days.
+For "every weekday next month", "daily at 5 AM", "Mon–Fri at 10", "next Monday to Friday", or "first week of next month":
+  1. Call plan_multi_day_bookings ONCE with durationMinutes, preferredTime (exact user time, e.g. "5:00 AM"), dayPattern (monthOffset: 1 + weekdaysOnly for ALL weekdays in next month; week: "first" only for "first week"), OR pass userMessage so the server resolves canonical ISO days[]. For "Monday to Friday" / "next Monday to Friday", always pass userMessage — do NOT invent days[]. Use returned days[] and resolvedDays from the tool — full month is ~20+ weekdays, NOT just 5 days.
   2. Resolve conflicts with user if needed, then exactly ONE confirmation quoting totalDays from the plan. When totalDays > 7, summarize in one sentence (e.g. "22 weekdays in June at 5:00 AM") — do NOT paste displayList line-by-line in chat.
-  3. After user confirms, call init_booking_job once with all autoBookable entries (all days in plan). The server expands to the full canonical plan if you pass fewer entries. If bookingPlanConfirmed is already true, do NOT re-plan or re-confirm unless the user changes requirements.
+  3. After user confirms → call init_booking_job IMMEDIATELY. Do NOT re-ask "Are you sure?" or re-confirm. The server expands to the full canonical plan if you pass fewer entries. If bookingPlanConfirmed is already true, do NOT re-plan or re-confirm unless the user changes requirements.
   4. Call execute_booking_batch at most ONCE (optional, ≤5 items). Remaining pending days are booked by the client progress UI — do NOT call init_booking_job or execute_booking_batch again after success.
   5. If init_booking_job returns job_already_done, tell the user all meetings are already booked — never re-initialize or show a new 0% progress job.
   6. Do NOT fire N separate create_event calls for multi-day jobs.
@@ -33,7 +33,14 @@ For "every weekday next month", "daily at 5 AM", "Mon–Fri at 10", or "first we
 
 FORBIDDEN: Never say "I'll let you know when done", "I'll inform you later", "I'll check back", or promise async follow-up. Only report bookings completed in this response.
 
+BATCH COMPLETION LANGUAGE (CRITICAL — check done field FIRST):
+- If execute_booking_batch returns done=true → say "All X meetings booked." STOP. Do NOT say "started", "in progress", "rest will complete", or any incomplete language.
+- If execute_booking_batch returns done=false → say "Booking started — X booked so far, the rest will complete automatically."
+- VOICE: summary MUST match: done=true → "All X meetings are booked." / done=false → "Booking started, rest will complete automatically."
+
 NEVER book one meeting then ask "shall I book the next?" — use the booking job flow.
+
+Do NOT say a multi-day meeting is booked until execute_booking_batch returns done=true OR booking progress shows 100% / pending=0.
 
 Single-day booking: one create_event after slot confirmation — immediate "Booked …" message.`;
 
@@ -41,11 +48,16 @@ export const BULK_CANCEL_RULES = `## Bulk cancel / delete many (CRITICAL)
 For "cancel all this month/week", "delete everything listed", "clear my calendar for …":
   1. Call list_events once for the stated range (server returns all pages).
   2. ONE confirmation with count + range only (e.g. "Cancel all 34 events in May?"). When count > 7, do NOT paste every title in chat or voice.
-  3. After user confirms, call init_cancel_job with all event IDs (server expands from cache if you pass fewer).
+  3. After user confirms → call init_cancel_job IMMEDIATELY with all event IDs. Do NOT re-confirm.
   4. Call execute_cancel_batch at most ONCE. Client SSE finishes the rest — do NOT call delete_event per event.
   5. If init_cancel_job returns job_already_done, tell the user cancellations are already done.
   6. NEVER say "I'll cancel one by one" or "I'll let you know when done".
-Single-event cancel: one match → delete_event immediately (no second confirmation).`;
+  7. CANCEL BATCH COMPLETION LANGUAGE (CRITICAL — check done field FIRST):
+     - If execute_cancel_batch returns done=true → say "All X events cancelled." STOP. Do NOT say "started", "in progress", or any incomplete language.
+     - If execute_cancel_batch returns done=false → say "Cancellation started — X cancelled so far, the rest will complete automatically."
+     - VOICE: summary MUST match: done=true → "All X events cancelled." / done=false → "Cancellation started, rest will complete automatically."
+Single-event cancel: one match → delete_event immediately (no second confirmation).
+CRITICAL: Only confirm a deletion happened AFTER delete_event returned {success: true}. If you did not call delete_event, the event is NOT cancelled.`;
 
 export const RESCHEDULE_WORKFLOW_RULES = `## Reschedule / move (mandatory order)
 1. identify_event(timeMin/timeMax for the stated day, timeHint + summaryHint from the user message).

@@ -35,6 +35,7 @@ import {
 } from '@/lib/calendar/events';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
+import { isMultiDayRangeMessage } from '@/lib/agent/booking-days';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
 import {
   buildLastMultiDayPlan,
@@ -325,6 +326,7 @@ async function executeTool(
         done: result.done,
         hint: result.hint,
         startBookingRun: !result.done && result.progress.pending > 0,
+        failedDetails: result.failedDetails.length > 0 ? result.failedDetails : undefined,
       },
       stateUpdates: { bookingJob: result.job },
     };
@@ -421,6 +423,7 @@ async function executeTool(
         done: result.done,
         hint: result.hint,
         startCancelRun: !result.done && result.progress.pending > 0,
+        failedDetails: result.failedDetails.length > 0 ? result.failedDetails : undefined,
       },
       stateUpdates: { cancelJob: result.job },
     };
@@ -604,14 +607,19 @@ async function executeTool(
 
   // ── delete_event ──────────────────────────────────────────────────────────
   if (toolName === 'delete_event') {
-    const { eventId } = args as { eventId: string };
+    const { eventId, eventSummary } = args as { eventId: string; eventSummary?: string };
     try {
       await deleteEvent(eventId);
-      debug.log({ type: 'tool_result', tool: 'delete_event', summary: `deleted ${eventId}` });
+      const label = eventSummary || eventId;
+      debug.log({ type: 'tool_result', tool: 'delete_event', summary: `deleted ${label}` });
       console.log(`[PERF][chat] executeTool delete_event: ${Date.now() - tExec}ms`);
       const invalidated = invalidateEventCache(state);
       return {
-        toolResult: { success: true, deletedEventId: eventId },
+        toolResult: {
+          success: true,
+          deletedEventId: eventId,
+          message: `Successfully deleted "${label}". The event has been removed from the calendar.`,
+        },
         stateUpdates: {
           cachedCalendar: invalidated.cachedCalendar,
           calendarVersion: invalidated.calendarVersion,
@@ -621,7 +629,10 @@ async function executeTool(
     } catch {
       console.log(`[PERF][chat] executeTool delete_event (not found): ${Date.now() - tExec}ms`);
       return {
-        toolResult: { success: false, error: 'Event not found or already deleted.' },
+        toolResult: {
+          success: false,
+          error: `Failed to delete event (${eventId}). The event was not found or was already deleted.`,
+        },
         stateUpdates: {},
       };
     }
@@ -661,7 +672,10 @@ export async function POST(req: NextRequest) {
 
     // 3. Auto-search: if all slots are filled and no fresh results exist, run find_free_slots
     //    immediately (saves an LLM round-trip — the LLM was going to call it anyway).
-    const needsAutoSearch = hasAllRequiredSlots(state) && state.calendarResults.length === 0;
+    const needsAutoSearch =
+      hasAllRequiredSlots(state) &&
+      state.calendarResults.length === 0 &&
+      !isMultiDayRangeMessage(message);
     if (needsAutoSearch) {
       const tAutoSearch = Date.now();
       debug.log({ type: 'tool_call', tool: 'find_free_slots', args: { duration: state.slots.duration, day: state.slots.day, timeWindow: state.slots.timeWindow } });

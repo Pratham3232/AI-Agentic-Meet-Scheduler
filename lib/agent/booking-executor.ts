@@ -40,6 +40,7 @@ export interface ExecuteBookingBatchResult {
   reconciledThisBatch: number;
   done: boolean;
   hint: string;
+  failedDetails: Array<{ day: string; reason: string }>;
 }
 
 const DEFAULT_BATCH_SIZE = 5;
@@ -269,6 +270,7 @@ export async function executeBookingBatch(
       reconciledThisBatch: 0,
       done: true,
       hint: 'Booking job already finished.',
+      failedDetails: [],
     };
   }
 
@@ -283,6 +285,7 @@ export async function executeBookingBatch(
       reconciledThisBatch: 0,
       done: true,
       hint: 'No pending items.',
+      failedDetails: [],
     };
   }
 
@@ -301,6 +304,7 @@ export async function executeBookingBatch(
   let failedThisBatch = 0;
   let reconciledThisBatch = 0;
   let processed = 0;
+  const failedDetails: Array<{ day: string; reason: string }> = [];
 
   for (let i = 0; i < items.length && processed < batchSize; i++) {
     if (items[i].status !== 'pending') continue;
@@ -355,6 +359,7 @@ export async function executeBookingBatch(
           status: 'failed',
           error: 'Time slot is no longer available.',
         };
+        failedDetails.push({ day: item.day, reason: 'slot_conflict — time slot is no longer available' });
         failedThisBatch++;
         continue;
       }
@@ -379,6 +384,7 @@ export async function executeBookingBatch(
         status: 'failed',
         error: message,
       };
+      failedDetails.push({ day: item.day, reason: message });
       failedThisBatch++;
       debug?.log({
         type: 'booking_batch_item',
@@ -414,8 +420,9 @@ export async function executeBookingBatch(
     reconciledThisBatch,
     done: finalProgress.pending === 0,
     hint: finalProgress.pending === 0
-      ? 'All days processed. Do not call init_booking_job or execute_booking_batch again.'
-      : 'More days pending — client SSE will continue booking.',
+      ? `All ${finalProgress.booked} meeting(s) booked. Do not call init_booking_job or execute_booking_batch again. Tell user: "All meetings are booked."`
+      : `Booking started — ${finalProgress.booked} booked so far, ${finalProgress.pending} remaining will complete automatically via the progress bar. Tell user: "Booking started — the rest will complete automatically."`,
+    failedDetails,
   };
 }
 

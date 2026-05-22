@@ -1,4 +1,5 @@
 import type { PlanMultiDayResult } from '@/lib/agent/multi-booking';
+import { entriesFingerprint } from '@/lib/agent/booking-days';
 import { getBookingProgress } from '@/lib/agent/booking-executor';
 import type { ConversationState, LastMultiDayPlan } from '@/types';
 
@@ -30,9 +31,11 @@ export function buildLastMultiDayPlan(
   preferredTime: string,
   summary = 'Meeting'
 ): LastMultiDayPlan {
+  const initEntries = buildInitEntriesFromPlan(plan, summary);
   return {
     days: plan.days,
-    initEntries: buildInitEntriesFromPlan(plan, summary),
+    initEntries,
+    fingerprint: entriesFingerprint(initEntries),
     preferredTime,
     totalDays: plan.totalDays,
     summary,
@@ -93,6 +96,12 @@ export function resolveInitEntries(
   if (llmEntries.length < canonical.length) {
     return { entries: canonical, overridden: true };
   }
+  if (
+    llmEntries.length === canonical.length &&
+    entriesFingerprint(llmEntries) !== lastPlan.fingerprint
+  ) {
+    return { entries: canonical, overridden: true };
+  }
   return { entries: llmEntries, overridden: false };
 }
 
@@ -105,23 +114,31 @@ export function buildPlanToolResult(plan: PlanMultiDayResult): Record<string, un
         ? ` ${plan.conflicts.length} conflict day(s) need user picks before init.`
         : '';
 
+  const resolvedDaysNote =
+    plan.days.length > 0 && plan.days.length <= 7
+      ? ` Quote dates from resolvedDays only — do not invent days[]: ${plan.days.join(', ')}.`
+      : plan.days.length > 7
+        ? ` Server resolved ${plan.days.length} days — use days[] from this result for counts; do not invent ISO dates.`
+        : '';
+
   const base: Record<string, unknown> = {
     autoBookable: plan.autoBookable,
     conflicts: plan.conflicts,
     summary: plan.summary,
     totalDays: plan.totalDays,
     days: plan.days,
+    resolvedDays: plan.days,
     weekdayLabels: plan.weekdayLabels,
     initEntriesCount: plan.autoBookable.filter(e => e.start && e.end).length,
     conflictCount: plan.conflicts.length,
     hint:
       plan.conflicts.length === 0
         ? large
-          ? `All ${plan.totalDays} day(s) available. Confirm with a ONE-line summary (count + month + time) — do NOT list every day or paste displayList. Then init_booking_job; server has initEntriesCount canonical entries.${conflictNote}`
-          : `All ${plan.days.length} day(s) available. Ask ONE confirmation, then init_booking_job with every autoBookable entry. Do NOT re-plan after confirm.${conflictNote}`
+          ? `All ${plan.totalDays} day(s) available. Confirm with a ONE-line summary (count + month + time) — do NOT list every day or paste displayList. Then init_booking_job; server has initEntriesCount canonical entries.${resolvedDaysNote}${conflictNote}`
+          : `All ${plan.days.length} day(s) available. Ask ONE confirmation, then init_booking_job with every autoBookable entry. Do NOT re-plan after confirm.${resolvedDaysNote}${conflictNote}`
         : large
-          ? `Show ONLY conflict days (one alternative each). Do not enumerate all ${plan.totalDays} days in chat. After user picks, init_booking_job with one entry per resolved day.${conflictNote}`
-          : `Show ONLY conflict days (one alternative each). After user picks, init_booking_job once.${conflictNote}`,
+          ? `Show ONLY conflict days (one alternative each). Do not enumerate all ${plan.totalDays} days in chat. After user picks, init_booking_job with one entry per resolved day.${resolvedDaysNote}${conflictNote}`
+          : `Show ONLY conflict days (one alternative each). After user picks, init_booking_job once.${resolvedDaysNote}${conflictNote}`,
   };
   if (!large) {
     base.displayList = plan.displayList;

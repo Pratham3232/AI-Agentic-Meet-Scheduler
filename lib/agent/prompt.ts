@@ -59,6 +59,14 @@ export function buildSystemPrompt(
   const dayAfterDate = formatInTimeZone(dayAfter, timezone, 'yyyy-MM-dd');
   const dayAfterDay  = formatInTimeZone(dayAfter, timezone, 'EEEE');
 
+  const dateGrid: string[] = [];
+  for (let d = 0; d < 14; d++) {
+    const dt = new Date(now.getTime() + d * 86400000);
+    const iso = formatInTimeZone(dt, timezone, 'yyyy-MM-dd');
+    const dayName = formatInTimeZone(dt, timezone, 'EEEE');
+    dateGrid.push(`  ${dayName} ${iso}`);
+  }
+
   const isStale  =
     state.lastSearchParams !== null &&
     (state.lastSearchParams.duration !== state.slots.duration ||
@@ -103,6 +111,12 @@ User timezone: ${timezone}
 CRITICAL: "tomorrow" = ${tomorrowDate}. "day after tomorrow" = ${dayAfterDate}. Never add extra days.
 IMPORTANT: Never suggest a time slot that is before ${nowLocal} today.
 
+### Date Grid (next 14 days — ALWAYS look up dates here, NEVER calculate)
+${dateGrid.join('\n')}
+When the user says "Monday", find the NEXT Monday in this grid and use that exact ISO date.
+When the user gives an explicit date like "May 25" or "25th May", use that exact date — do NOT re-interpret or adjust it.
+When building a days[] array for plan_multi_day_bookings, look up EACH date in this grid. Never do weekday arithmetic yourself.
+
 ## User Working Hours
 Default range for **vague** time searches: ${whLabel} (${timezone}).
 ${WORKING_HOURS_POLICY}
@@ -135,6 +149,15 @@ and resume it when the tangent is resolved.
 7. To answer "what's on my calendar?" queries, ALWAYS call list_events — even if you already have results. Never recite events from memory.
 8. Keep replies short and conversational.
 ${isStale ? `9. STALE SEARCH: user changed a requirement. You MUST call find_free_slots with updated params before presenting ANY slots.` : ''}
+10. SINGLE CONFIRMATION: After the user confirms with "yes", "go ahead", "sure", "do it", "yeah", "sounds good", etc., EXECUTE the action immediately. NEVER re-ask "Are you sure?", "Shall I proceed?", or re-confirm the same action. One confirmation = immediate execution.
+11. TOOL VERIFICATION: NEVER confirm a deletion, cancellation, or booking unless the corresponding tool (delete_event, create_event, init_cancel_job) returned {success: true} or a valid job. If you did NOT call the tool, you have NOT performed the action — do not tell the user it's done.
+12. CALENDAR STATE VERIFICATION: NEVER claim meetings exist, are booked, or are on the calendar unless a tool result in THIS conversation confirms it. Specifically:
+    - Do NOT say "there are already 2 meetings booked" without list_events showing them.
+    - Do NOT say "your meeting is booked" without create_event returning {success: true}.
+    - Do NOT assume calendar state from conversation context alone — always verify via tool.
+    - If unsure whether something is on the calendar, call list_events first.
+13. BATCH COMPLETION LANGUAGE: When a tool returns done=true, the operation is FINISHED. Say "All X booked/cancelled." When done=false, say "started — rest will complete automatically." ALWAYS check the done field FIRST — never default to "started" language.
+14. INTENT DISAMBIGUATION: When the user says "find" + "book" in the same message (e.g. "find book slots", "find and book"), ask: "Would you like me to find available time slots, or check what's already booked on your calendar?" Do NOT guess — ambiguous phrasing requires one clarifying question.
 
 ${CONFLICT_HANDLING_RULES}
 
@@ -156,7 +179,10 @@ ${RESCHEDULE_WORKFLOW_RULES}
 
 ${MULTI_DAY_BOOKING_RULES}
 
-For multiple meetings on the SAME day (not multi-day): find slots for ALL first, one confirmation, all create_event in one turn.
+For multiple meetings on the SAME day (not multi-day):
+  - Find slots for ALL meetings first, present them together, get ONE confirmation.
+  - After user confirms, call ALL create_event calls in a SINGLE response — do NOT ask for confirmation between individual bookings.
+  - NEVER say "Shall I book the second one?" or "Do you want me to continue with the next?" after the first create_event succeeds. Execute ALL confirmed create_event calls in one turn.
 
 ${MULTI_BOOKING_GAP_RULES}
 
@@ -189,5 +215,6 @@ ${buildLastRescheduledBlock(state)}
 After your response, on a NEW LINE, write exactly:
 VOICE: <one or two spoken sentences summarising your reply>
 For slot lists: mention day, first 2 times only, then "full list in chat".
-Keep it under 25 words.`;
+Keep it under 25 words.
+CRITICAL: The VOICE: line must reflect the FINAL state of the operation. If a batch returned done=true, say "All X booked/cancelled." NEVER say "started" or "rest will complete" when done=true.`;
 }

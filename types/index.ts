@@ -130,6 +130,7 @@ export interface LastMultiDayPlan {
     end: string;
     summary: string;
   }>;
+  fingerprint: string;
   preferredTime: string;
   totalDays: number;
   summary: string;

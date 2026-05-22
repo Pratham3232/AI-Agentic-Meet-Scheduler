@@ -1,4 +1,5 @@
 import {
+  isMultiDayRangeMessage,
   parseBookingDayRequest,
   resolveFirstWeekOfMonth,
   resolveWeekdaysInRange,
@@ -8,6 +9,28 @@ const TZ = 'America/New_York';
 const TODAY = new Date('2026-05-21T12:00:00Z');
 
 describe('booking-days', () => {
+  test('next monday to next friday resolves May 25–29 2026', () => {
+    const days = parseBookingDayRequest(
+      'meetings from next monday to next friday at 7pm daily for five minutes',
+      TZ,
+      new Date('2026-05-22T12:00:00Z')
+    );
+    expect(days).toEqual([
+      '2026-05-25',
+      '2026-05-26',
+      '2026-05-27',
+      '2026-05-28',
+      '2026-05-29',
+    ]);
+  });
+
+  test('isMultiDayRangeMessage matches monday to friday range', () => {
+    expect(
+      isMultiDayRangeMessage('from next monday to next friday at 7pm')
+    ).toBe(true);
+    expect(isMultiDayRangeMessage('book 30 min tomorrow at 2pm')).toBe(false);
+  });
+
   test('first week of next month Mon–Fri resolves Jun 1–5 2026', () => {
     const days = parseBookingDayRequest(
       'book a 15 min break monday to friday first week of next month at 9pm',
