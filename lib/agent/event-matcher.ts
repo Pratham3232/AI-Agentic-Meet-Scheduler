@@ -511,8 +511,8 @@ export async function runRescheduleEvent(
             lastRescheduledEvent: {
               eventId: stableId,
               summary,
-              start: patched.start?.dateTime || newStartTime,
-              end: patched.end?.dateTime || newEndTime,
+              start: patched.start?.dateTime || resolvedStart,
+              end: patched.end?.dateTime || resolvedEnd,
               display,
               day,
             },
