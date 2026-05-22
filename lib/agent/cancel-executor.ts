@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getCancelProgress } from '@/lib/agent/cancel-progress';
+import { isStaleSseLock } from '@/lib/agent/job-sse';
 import { deleteEvent } from '@/lib/calendar/events';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import type { DebugLogger } from '@/lib/debug';
@@ -37,6 +38,9 @@ export interface ExecuteCancelBatchResult {
 
 const DEFAULT_BATCH_SIZE = 5;
 
+export const CANCEL_SSE_WAIT_HINT =
+  ' Client SSE is finishing remaining cancellations in the progress bar. Do NOT diagnose failures or delete_event one-by-one until [CANCEL_COMPLETE]. Say briefly that cancellation is in progress below.';
+
 export function eventIdsFingerprint(eventIds: string[]): string {
   const sorted = [...eventIds].sort();
   return createHash('sha256').update(sorted.join('|')).digest('hex').slice(0, 16);
@@ -46,15 +50,17 @@ export function resolveCancelEventIds(
   eventIds: string[],
   state: ConversationState
 ): string[] {
-  if (eventIds.length >= 2) return eventIds;
+  if (eventIds.length >= 1) return eventIds;
   const target = state.lastBulkCancelTarget;
   if (target?.eventIds?.length) return target.eventIds;
   const cache = state.cachedCalendar;
-  if (cache?.events?.length && eventIds.length <= 1) {
-    return cache.events.map(e => e.id);
-  }
-  return eventIds;
+  if (cache?.events?.length) return cache.events.map(e => e.id);
+  return [];
 }
+
+export type ExecuteCancelBatchOptions = {
+  fromSseLoop?: boolean;
+};
 
 function buildItemsFromIds(
   eventIds: string[],
@@ -113,6 +119,14 @@ export async function evaluateInitCancelBlock(
 
   if (existingJob) {
     const progress = getCancelProgress(existingJob);
+    if (existingJob.sseInProgress && !isStaleSseLock(existingJob)) {
+      return {
+        error: 'job_already_done',
+        message:
+          'Cancellation is in progress via the progress bar. Do not call init_cancel_job or execute_cancel_batch again.',
+        progress,
+      };
+    }
     if (existingJob.status === 'completed') {
       return {
         error: 'job_already_done',
@@ -171,15 +185,29 @@ export async function initCancelJob(
     hint:
       items.length === 0
         ? 'No events to cancel.'
-        : 'Cancel job initialized. Client will delete remaining events via progress UI. Do not call delete_event for each event.',
+        : `Cancel job initialized. Client will delete remaining events via progress UI. Do not call delete_event for each event.${CANCEL_SSE_WAIT_HINT}`,
   };
 }
 
 export async function executeCancelBatch(
   job: CancelJob,
   batchSize: number = DEFAULT_BATCH_SIZE,
-  debug?: DebugLogger
+  debug?: DebugLogger,
+  options?: ExecuteCancelBatchOptions
 ): Promise<ExecuteCancelBatchResult> {
+  if (job.sseInProgress && !isStaleSseLock(job) && !options?.fromSseLoop) {
+    const progress = getCancelProgress(job);
+    return {
+      job,
+      progress,
+      cancelledThisBatch: 0,
+      failedThisBatch: 0,
+      done: false,
+      hint: `Cancellation is running via progress UI (${progress.cancelled}/${progress.total} done). Do not call execute_cancel_batch — wait for [CANCEL_COMPLETE].${CANCEL_SSE_WAIT_HINT}`,
+      failedDetails: [],
+    };
+  }
+
   const progress = getCancelProgress(job);
   if (progress.pending === 0 || job.status === 'completed') {
     const finalized = finalizeCancelJobStatus(job);
@@ -247,8 +275,8 @@ export async function executeCancelBatch(
     hint:
       finalProgress.pending === 0
         ? `All ${finalProgress.cancelled} event(s) cancelled. Do not call init_cancel_job or delete_event again. Tell user: "All events cancelled."`
-        : `Cancellation started — ${finalProgress.cancelled} cancelled so far, ${finalProgress.pending} remaining will complete automatically via the progress bar. Tell user: "Cancellation started — the rest will complete automatically."`,
-    failedDetails,
+        : `Cancellation started — ${finalProgress.cancelled} cancelled so far, ${finalProgress.pending} remaining will complete automatically via the progress bar. Tell user: "Cancellation started — the rest will complete automatically."${CANCEL_SSE_WAIT_HINT}`,
+    failedDetails: finalProgress.pending === 0 ? failedDetails : [],
   };
 }
 
@@ -269,7 +297,9 @@ export async function runCancelJobToCompletion(
   let progress = getCancelProgress(current);
 
   while (progress.pending > 0) {
-    const result = await executeCancelBatch(current, batchSize, debug);
+    const result = await executeCancelBatch(current, batchSize, debug, {
+      fromSseLoop: true,
+    });
     current = result.job;
     progress = result.progress;
     onBatch?.(progress);

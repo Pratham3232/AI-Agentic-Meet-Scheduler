@@ -1,6 +1,7 @@
 import {
   initCancelJob,
   executeCancelBatch,
+  runCancelJobToCompletion,
   evaluateInitCancelBlock,
   resolveCancelEventIds,
   eventIdsFingerprint,
@@ -83,9 +84,49 @@ describe('cancel-executor', () => {
     jest.clearAllMocks();
   });
 
-  test('resolveCancelEventIds expands from lastBulkCancelTarget', () => {
+  test('resolveCancelEventIds keeps explicit single id', () => {
     const ids = resolveCancelEventIds(['e1'], baseState());
+    expect(ids).toEqual(['e1']);
+  });
+
+  test('resolveCancelEventIds expands from lastBulkCancelTarget when empty', () => {
+    const ids = resolveCancelEventIds([], baseState());
     expect(ids).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  test('resolveCancelEventIds expands from cache when empty and no bulk target', () => {
+    const ids = resolveCancelEventIds(
+      [],
+      baseState({ lastBulkCancelTarget: null })
+    );
+    expect(ids).toEqual(['e1', 'e2', 'e3']);
+  });
+
+  test('executeCancelBatch cancels when sseInProgress with fromSseLoop', async () => {
+    const init = await initCancelJob(['e1'], baseState(), 'UTC');
+    if ('error' in init) throw new Error('unexpected');
+    const inSse = {
+      ...init.job,
+      sseInProgress: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const batch = await executeCancelBatch(inSse, 5, undefined, { fromSseLoop: true });
+    expect(batch.cancelledThisBatch).toBe(1);
+    expect(deleteEvent).toHaveBeenCalledTimes(1);
+  });
+
+  test('runCancelJobToCompletion cancels when job has sseInProgress', async () => {
+    const init = await initCancelJob(['e1', 'e2'], baseState(), 'UTC');
+    if ('error' in init) throw new Error('unexpected');
+    const inSse = {
+      ...init.job,
+      sseInProgress: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const { progress } = await runCancelJobToCompletion(inSse, 5);
+    expect(progress.pending).toBe(0);
+    expect(progress.cancelled).toBe(2);
+    expect(deleteEvent).toHaveBeenCalledTimes(2);
   });
 
   test('initCancelJob creates pending items', async () => {

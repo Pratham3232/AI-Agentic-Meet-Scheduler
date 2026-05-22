@@ -62,7 +62,16 @@ export function upsertCancelProgressMessage(
 
   if (progressIdx >= 0) {
     const updated = [...stripped];
-    updated[progressIdx] = progressMsg;
+    const existing = stripped[progressIdx];
+    const preserved =
+      Boolean(existing.content?.trim()) &&
+      !existing.content.startsWith('Cancellation complete') &&
+      !existing.content.startsWith('Cancelling meetings');
+    updated[progressIdx] = {
+      ...existing,
+      content: preserved ? existing.content : content,
+      cancelProgress: snap,
+    };
     return updated;
   }
   return [...stripped, progressMsg];

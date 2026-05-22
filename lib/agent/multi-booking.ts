@@ -28,7 +28,7 @@ const MON_FRI = [1, 2, 3, 4, 5];
 
 export interface PlanMultiDayArgs {
   durationMinutes: number;
-  days: string[];
+  days?: string[];
   preferredTime: string;
   timezone: string;
   workingHours?: WorkingHours;
@@ -37,14 +37,23 @@ export interface PlanMultiDayArgs {
 }
 
 export function resolvePlanDays(
-  days: string[],
+  days: string[] | undefined,
   timezone: string,
   options?: { dayPattern?: BookingDayPattern; userMessage?: string },
   now: Date = new Date()
 ): string[] {
+  const safeDays = days ?? [];
+  let userMessageParsed = false;
   if (options?.userMessage) {
     const parsed = parseBookingDayRequest(options.userMessage, timezone, now);
-    if (parsed?.length) return parsed;
+    if (parsed?.length) {
+      userMessageParsed = true;
+      return parsed;
+    }
+  }
+
+  if (safeDays.length > 0 && !userMessageParsed) {
+    return safeDays;
   }
 
   const pattern = options?.dayPattern;
@@ -95,7 +104,7 @@ export function resolvePlanDays(
     return week.days;
   }
 
-  return days;
+  return safeDays;
 }
 
 function parseYearMonthFromNow(now: Date, timezone: string): { year: number; month: number } {

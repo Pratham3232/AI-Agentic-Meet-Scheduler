@@ -1,6 +1,7 @@
 /**
  * Serializes OpenAI Realtime `response.create` so only one response is active at a time,
  * and batches parallel function_call outputs into a single continuation.
+ * Completion responses (post-SSE) use a separate lane that bypasses continuationSentForTurn.
  */
 
 export type DcSendFn = (payload: string) => void;
@@ -10,6 +11,8 @@ export class RealtimeResponseGate {
   private inflightCallIds = new Set<string>();
   private pendingCreate = false;
   private continuationSentForTurn = false;
+  private completionPending = false;
+  private completionInstructions: string | null = null;
   private sendFn: DcSendFn | null = null;
 
   setSendFn(fn: DcSendFn | null): void {
@@ -21,6 +24,8 @@ export class RealtimeResponseGate {
     this.inflightCallIds.clear();
     this.pendingCreate = false;
     this.continuationSentForTurn = false;
+    this.completionPending = false;
+    this.completionInstructions = null;
   }
 
   onResponseCreated(responseId: string): void {
@@ -31,6 +36,7 @@ export class RealtimeResponseGate {
   onResponseEnded(): void {
     this.activeResponseId = null;
     this.continuationSentForTurn = false;
+    this.flushCompletion();
     this.flushPending();
   }
 
@@ -64,6 +70,34 @@ export class RealtimeResponseGate {
   requestResponse(): void {
     this.pendingCreate = true;
     this.flushPending();
+  }
+
+  /**
+   * After [BOOKING_COMPLETE] / [CANCEL_COMPLETE]: speak success without competing
+   * with tool continuationSentForTurn.
+   */
+  requestCompletionResponse(instructions?: string): void {
+    this.completionPending = true;
+    this.completionInstructions = instructions ?? null;
+    this.flushCompletion();
+  }
+
+  private flushCompletion(): void {
+    if (!this.completionPending) return;
+    if (this.inflightCallIds.size > 0) return;
+    if (this.activeResponseId !== null) return;
+
+    const send = this.sendFn;
+    if (!send) return;
+
+    const payload: Record<string, unknown> = { type: 'response.create' };
+    if (this.completionInstructions) {
+      payload.response = { instructions: this.completionInstructions };
+    }
+    send(JSON.stringify(payload));
+    this.completionPending = false;
+    this.completionInstructions = null;
+    this.continuationSentForTurn = true;
   }
 
   private flushPending(): void {

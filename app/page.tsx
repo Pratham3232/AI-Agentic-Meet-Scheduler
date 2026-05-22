@@ -38,6 +38,20 @@ import {
 
 type SlotOption = { display: string; start: string; end: string };
 type EventItem = { id: string; summary: string; display: string };
+type PlanDayEntry = {
+  day: string;
+  status: 'auto_bookable' | 'conflict';
+  display?: string;
+  requestedDisplay?: string;
+  blockers?: Array<{ summary: string; display: string }>;
+  suggestedAlternative?: { start: string; end: string; display: string };
+};
+
+type MultiDayPlanPayload = {
+  autoBookable?: PlanDayEntry[];
+  conflicts?: PlanDayEntry[];
+};
+
 type Message = {
   role: string;
   content: string;
@@ -45,6 +59,7 @@ type Message = {
   events?: EventItem[];
   bookingProgress?: BookingProgressSnapshot;
   cancelProgress?: CancelProgressSnapshot;
+  multiDayPlan?: MultiDayPlanPayload;
 };
 type WorkingHours = { startHour: number; endHour: number };
 
@@ -116,6 +131,7 @@ export default function Home() {
   // Tool result data stashed here, then merged into the model's next spoken transcript
   const pendingSlotsRef        = useRef<SlotOption[] | null>(null);
   const pendingEventsRef       = useRef<EventItem[] | null>(null);
+  const pendingPlanRef         = useRef<MultiDayPlanPayload | null>(null);
   const pendingBookingRef      = useRef<BookingProgressSnapshot | null>(null);
   const bookingRunActiveRef    = useRef(false);
   const cancelRunActiveRef     = useRef(false);
@@ -130,8 +146,8 @@ export default function Home() {
   const pushVoiceBookingCompleteContext = useCallback(
     async (snap: BookingProgressSnapshot, sid: string) => {
       if (snap.pending > 0 && snap.status !== 'completed') return;
+      if (snap.booked <= 0) return;
       if (lastBookingCompletePushedRef.current === snap.jobId) return;
-      lastBookingCompletePushedRef.current = snap.jobId;
 
       let confirmedSummary: string | null = null;
       try {
@@ -158,17 +174,21 @@ export default function Home() {
         );
       }
 
+      const completeHint = bookingCompleteConversationHint(snap);
       dc.send(
         JSON.stringify({
           type: 'conversation.item.create',
           item: {
             type: 'message',
             role: 'user',
-            content: [
-              { type: 'input_text', text: bookingCompleteConversationHint(snap) },
-            ],
+            content: [{ type: 'input_text', text: completeHint }],
           },
         })
+      );
+
+      lastBookingCompletePushedRef.current = snap.jobId;
+      responseGateRef.current.requestCompletionResponse(
+        `Say one short sentence confirming success: all ${snap.booked} meeting(s) are on the calendar. Do not mention errors, retries, or technical issues. ${completeHint}`
       );
     },
     []
@@ -244,8 +264,8 @@ export default function Home() {
   const pushVoiceCancelCompleteContext = useCallback(
     async (snap: CancelProgressSnapshot, sid: string) => {
       if (snap.pending > 0 && snap.status !== 'completed') return;
+      if (snap.cancelled <= 0) return;
       if (lastCancelCompletePushedRef.current === snap.jobId) return;
-      lastCancelCompletePushedRef.current = snap.jobId;
 
       let confirmedSummary: string | null = null;
       try {
@@ -272,17 +292,21 @@ export default function Home() {
         );
       }
 
+      const completeHint = cancelCompleteConversationHint(snap);
       dc.send(
         JSON.stringify({
           type: 'conversation.item.create',
           item: {
             type: 'message',
             role: 'user',
-            content: [
-              { type: 'input_text', text: cancelCompleteConversationHint(snap) },
-            ],
+            content: [{ type: 'input_text', text: completeHint }],
           },
         })
+      );
+
+      lastCancelCompletePushedRef.current = snap.jobId;
+      responseGateRef.current.requestCompletionResponse(
+        `Say one short sentence confirming success: all ${snap.cancelled} event(s) are cancelled. Do not mention errors or retries. ${completeHint}`
       );
     },
     []
@@ -449,6 +473,12 @@ export default function Home() {
         pendingSlotsRef.current = data.result.slots;
       } else if (toolName === 'list_events' && data.result?.events?.length) {
         pendingEventsRef.current = capEventsForDisplay(data.result.events);
+      } else if (toolName === 'plan_multi_day_bookings') {
+        const auto = data.result?.autoBookable as PlanDayEntry[] | undefined;
+        const conflicts = data.result?.conflicts as PlanDayEntry[] | undefined;
+        if ((auto?.length ?? 0) > 0 || (conflicts?.length ?? 0) > 0) {
+          pendingPlanRef.current = { autoBookable: auto, conflicts };
+        }
       } else if (
         (toolName === 'init_booking_job' || toolName === 'execute_booking_batch') &&
         data.result?.progress
@@ -467,9 +497,11 @@ export default function Home() {
           void runBookingJob(data.sessionId);
         }
         const sidDone = data.sessionId || sessionId;
+        const sseWillFinish = data.result.startBookingRun === true;
         if (
           sidDone &&
           data.result?.progress &&
+          !sseWillFinish &&
           (data.result.error === 'job_already_done' ||
             data.result.done === true ||
             (data.result.progress.pending === 0 && data.result.progress.booked > 0))
@@ -499,9 +531,11 @@ export default function Home() {
           void runCancelJob(data.sessionId);
         }
         const sidCancel = data.sessionId || sessionId;
+        const cancelSseWillFinish = data.result.startCancelRun === true;
         if (
           sidCancel &&
           data.result?.progress &&
+          !cancelSseWillFinish &&
           (data.result.error === 'job_already_done' ||
             data.result.done === true ||
             (data.result.progress.pending === 0 &&
@@ -524,6 +558,7 @@ export default function Home() {
       console.error('[Realtime][Tool] Error:', err);
       pendingSlotsRef.current = null;
       pendingEventsRef.current = null;
+      pendingPlanRef.current = null;
       responseGateRef.current.submitToolResult(callId, {
         error: 'Tool execution failed',
       });
@@ -698,6 +733,10 @@ English only.`;
               timeWindow: { type: 'string', enum: ['morning', 'afternoon', 'evening', 'anytime'] },
               preferredStartTime: { type: 'string', description: 'e.g. "10:00" or "10 AM"' },
               preferredEndTime: { type: 'string', description: 'End of range if user said "9 to 11"' },
+              bufferAfterLastMeetingMinutes: {
+                type: 'number',
+                description: 'Minutes after last meeting end on day (decompress); server reads calendar',
+              },
             },
             required: ['duration', 'day', 'timeWindow'],
           },
@@ -832,16 +871,17 @@ English only.`;
         {
           type: 'function',
           name: 'reschedule_event',
-          description: 'Preview (confirmed=false) or execute (confirmed=true) reschedule after identify_event.',
+          description: 'Preview (confirmed=false) or execute (confirmed=true). Use shiftMinutes for relative moves.',
           parameters: {
             type: 'object',
             properties: {
               eventId: { type: 'string' },
               newStartTime: { type: 'string' },
               newEndTime: { type: 'string' },
+              shiftMinutes: { type: 'number' },
               confirmed: { type: 'boolean' },
             },
-            required: ['eventId', 'newStartTime', 'newEndTime', 'confirmed'],
+            required: ['eventId', 'confirmed'],
           },
         },
         {
@@ -990,13 +1030,17 @@ English only.`;
 
         const slots = pendingSlotsRef.current;
         const events = pendingEventsRef.current;
+        const plan = pendingPlanRef.current;
         const booking = pendingBookingRef.current;
         pendingSlotsRef.current = null;
         pendingEventsRef.current = null;
+        pendingPlanRef.current = null;
         pendingBookingRef.current = null;
 
         const fallback = slots?.length ? 'Here are the available slots — pick one to book:'
           : events?.length ? 'Here\'s your schedule:'
+          : plan?.conflicts?.length ? 'Here is the multi-day plan — conflicts and alternatives below.'
+          : plan?.autoBookable?.length ? 'Here is the multi-day availability summary.'
           : booking ? 'Booking your meetings — see progress below.' : '';
 
         const msg: Message = {
@@ -1004,6 +1048,9 @@ English only.`;
           content: text || fallback,
           ...(slots?.length ? { slots } : {}),
           ...(events?.length ? { events } : {}),
+          ...(plan && ((plan.autoBookable?.length ?? 0) > 0 || (plan.conflicts?.length ?? 0) > 0)
+            ? { multiDayPlan: plan }
+            : {}),
         };
 
         if (text && assistantMsgIndexRef.current >= 0) {
@@ -1225,6 +1272,7 @@ English only.`;
     userMsgIndexRef.current = -1;
     pendingSlotsRef.current = null;
     pendingEventsRef.current = null;
+    pendingPlanRef.current = null;
     pendingBookingRef.current = null;
     latestProgressRef.current = null;
     latestCancelProgressRef.current = null;

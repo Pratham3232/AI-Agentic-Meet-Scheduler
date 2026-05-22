@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import MessageBubble from './MessageBubble';
 import BookingProgress from './BookingProgress';
 import CancelProgress from './CancelProgress';
+import MultiDayPlanCards, { type PlanDayEntry } from './MultiDayPlanCards';
 import type { BookingProgressSnapshot, CancelProgressSnapshot } from '@/types';
 
 type SlotOption = { display: string; start: string; end: string };
@@ -17,6 +18,7 @@ interface ChatWindowProps {
     events?: EventItem[];
     bookingProgress?: BookingProgressSnapshot;
     cancelProgress?: CancelProgressSnapshot;
+    multiDayPlan?: { autoBookable?: PlanDayEntry[]; conflicts?: PlanDayEntry[] };
   }>;
   isLoading: boolean;
   onSlotPick?: (slot: SlotOption) => void;
@@ -45,6 +47,12 @@ export default function ChatWindow({ messages, isLoading, onSlotPick }: ChatWind
           )}
           {message.cancelProgress && (
             <CancelProgress progress={message.cancelProgress} />
+          )}
+          {message.multiDayPlan && (
+            <MultiDayPlanCards
+              autoBookable={message.multiDayPlan.autoBookable}
+              conflicts={message.multiDayPlan.conflicts}
+            />
           )}
         </div>
       ))}

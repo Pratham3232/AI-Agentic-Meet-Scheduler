@@ -4,6 +4,7 @@ import { isSlotFree, eventsOverlappingRange } from '@/lib/calendar/slot-search';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { entriesFingerprint } from '@/lib/agent/booking-days';
 import { getBookingProgress } from '@/lib/agent/booking-progress';
+import { isStaleSseLock } from '@/lib/agent/job-sse';
 import type { DebugLogger } from '@/lib/debug';
 import type {
   BookingJob,
@@ -44,6 +45,10 @@ export interface ExecuteBookingBatchResult {
 }
 
 const DEFAULT_BATCH_SIZE = 5;
+
+/** Appended while client SSE finishes pending items (voice + text). */
+export const BOOKING_SSE_WAIT_HINT =
+  ' Client SSE is finishing remaining days in the progress bar. Do NOT diagnose failures, retry create_event, or say there was an issue until [BOOKING_COMPLETE]. Say briefly that booking is in progress below.';
 
 function sameSlot(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
   return aStart === bStart && aEnd === bEnd;
@@ -162,6 +167,22 @@ export async function evaluateInitBookingBlock(
 
   if (existingJob) {
     const progress = getBookingProgress(existingJob);
+    if (existingJob.status === 'in_progress' && progress.pending > 0) {
+      return {
+        error: 'job_already_done',
+        message:
+          'A booking job is already in progress. Wait for the progress bar to finish — do not call init_booking_job or execute_booking_batch again.',
+        progress,
+      };
+    }
+    if (existingJob.sseInProgress && !isStaleSseLock(existingJob)) {
+      return {
+        error: 'job_already_done',
+        message:
+          'Booking is in progress via the progress bar. Do not call init_booking_job or execute_booking_batch again.',
+        progress,
+      };
+    }
     if (existingJob.status === 'completed') {
       return {
         error: 'job_already_done',
@@ -235,7 +256,7 @@ export async function initBookingJob(
     hint:
       items.length === 0
         ? 'No entries to book.'
-        : 'Job initialized. The client will book remaining days via progress UI. When progress reaches 100%, all meetings are on the calendar — do not call create_event or find_free_slots to retry. Do not call init_booking_job again.',
+        : `Job initialized. The client will book remaining days via progress UI. When progress reaches 100%, all meetings are on the calendar — do not call create_event or find_free_slots to retry. Do not call init_booking_job again.${BOOKING_SSE_WAIT_HINT}`,
   };
 }
 
@@ -255,11 +276,31 @@ function finalizeJobStatus(job: BookingJob): BookingJob {
   };
 }
 
+export type ExecuteBookingBatchOptions = {
+  /** Internal SSE loop in runBookingJobToCompletion — must not self-block. */
+  fromSseLoop?: boolean;
+};
+
 export async function executeBookingBatch(
   job: BookingJob,
   batchSize: number = DEFAULT_BATCH_SIZE,
-  debug?: DebugLogger
+  debug?: DebugLogger,
+  options?: ExecuteBookingBatchOptions
 ): Promise<ExecuteBookingBatchResult> {
+  if (job.sseInProgress && !isStaleSseLock(job) && !options?.fromSseLoop) {
+    const progress = getBookingProgress(job);
+    return {
+      job,
+      progress,
+      bookedThisBatch: 0,
+      failedThisBatch: 0,
+      reconciledThisBatch: 0,
+      done: false,
+      hint: `Booking is running via progress UI (${progress.booked}/${progress.total} done). Do not call execute_booking_batch — wait for [BOOKING_COMPLETE].${BOOKING_SSE_WAIT_HINT}`,
+      failedDetails: [],
+    };
+  }
+
   const progress = getBookingProgress(job);
   if (progress.pending === 0 || job.status === 'completed') {
     return {
@@ -421,8 +462,8 @@ export async function executeBookingBatch(
     done: finalProgress.pending === 0,
     hint: finalProgress.pending === 0
       ? `All ${finalProgress.booked} meeting(s) booked. Do not call init_booking_job or execute_booking_batch again. Tell user: "All meetings are booked."`
-      : `Booking started — ${finalProgress.booked} booked so far, ${finalProgress.pending} remaining will complete automatically via the progress bar. Tell user: "Booking started — the rest will complete automatically."`,
-    failedDetails,
+      : `Booking started — ${finalProgress.booked} booked so far, ${finalProgress.pending} remaining will complete automatically via the progress bar. Tell user: "Booking started — the rest will complete automatically."${BOOKING_SSE_WAIT_HINT}`,
+    failedDetails: finalProgress.pending === 0 ? failedDetails : [],
   };
 }
 
@@ -450,7 +491,9 @@ export async function runBookingJobToCompletion(
   let progress = getBookingProgress(current);
 
   while (progress.pending > 0) {
-    const result = await executeBookingBatch(current, batchSize, debug);
+    const result = await executeBookingBatch(current, batchSize, debug, {
+      fromSseLoop: true,
+    });
     current = result.job;
     progress = result.progress;
     onBatch?.(progress);

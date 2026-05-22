@@ -64,6 +64,26 @@ Run after changes to booking flow, progress UI, or session/SSE logic.
 2. No duplicate `response.create` errors mid-flow.
 3. Optional: say `yes` while assistant is still speaking; no DC error.
 
+### 10. Cancel one meeting (not whole day)
+
+1. `list_events` for a day with several meetings.
+2. Ask to cancel **one** named meeting (e.g. sync-up only).
+3. Cancel rail shows **1** total (not all events from the list).
+4. Rail reaches 100%; only that event removed from calendar.
+
+### 11. Reschedule relative ±30 minutes
+
+1. Book a 30-minute meeting at 3:30 PM.
+2. Ask to reschedule **30 minutes earlier** → calendar shows **3:00–3:30 PM** (not 2:30).
+3. Ask **30 minutes later** → **3:30–4:00 PM** (not 4:00–4:30).
+
+### 12. Evening after last meeting + buffer
+
+1. Day with an afternoon meeting ending ~6 PM.
+2. Ask: evening after 7, need **1 hour** decompress after last meeting.
+3. Agent calls `find_free_slots` with `bufferAfterLastMeetingMinutes: 60` — does **not** ask when last meeting ends.
+4. Slots start at or after max(7 PM, last meeting end + 1h).
+
 ## Pass criteria
 
 - No duplicate progress cards at 100%
@@ -71,3 +91,5 @@ Run after changes to booking flow, progress UI, or session/SSE logic.
 - No re-init loop after success (`job_already_done` only as message, not new 0% job)
 - Bulk cancel completes via rail without serial `delete_event` in voice
 - No Realtime `active response in progress` errors during multi-tool turns
+- Single-event cancel: rail total = 1; cancel SSE completes (check logs for no OOM)
+- Reschedule ±30 min matches calendar, not ±60 min

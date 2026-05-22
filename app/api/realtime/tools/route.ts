@@ -10,7 +10,6 @@ import {
   initCancelJob,
   executeCancelBatch,
   getCancelProgress,
-  setLastBulkCancelTarget,
 } from '@/lib/agent/cancel-executor';
 import { tryReconcileCreateEventWithBookingJob } from '@/lib/agent/booking-context';
 import {
@@ -114,6 +113,7 @@ export async function POST(req: NextRequest) {
         timeWindow,
         preferredStartTime,
         preferredEndTime,
+        bufferAfterLastMeetingMinutes,
       } = args;
 
       const searchResult = await executeFindFreeSlots(
@@ -123,6 +123,7 @@ export async function POST(req: NextRequest) {
           timeWindow,
           preferredStartTime,
           preferredEndTime,
+          bufferAfterLastMeetingMinutes,
         },
         timezone,
         debug,
@@ -362,7 +363,7 @@ export async function POST(req: NextRequest) {
       Object.assign(state, identified.stateUpdates);
 
     } else if (toolName === 'reschedule_event') {
-      const { eventId, newStartTime, newEndTime, confirmed } = args;
+      const { eventId, newStartTime, newEndTime, confirmed, shiftMinutes } = args;
       const rescheduled = await runRescheduleEvent(
         eventId,
         newStartTime,
@@ -370,7 +371,8 @@ export async function POST(req: NextRequest) {
         confirmed,
         timezone,
         state,
-        debug
+        debug,
+        shiftMinutes
       );
       result = rescheduled.result;
       Object.assign(state, rescheduled.stateUpdates);
@@ -438,14 +440,7 @@ export async function POST(req: NextRequest) {
       const { timeMin, timeMax } = args;
       const events = await listEventsPaginated(timeMin, timeMax, undefined, debug);
       const cached = updateEventCache(state, timeMin, timeMax, events, timezone);
-      const withTarget = setLastBulkCancelTarget(
-        cached,
-        timeMin,
-        timeMax,
-        cached.cachedCalendar!.events
-      );
-      state.cachedCalendar = withTarget.cachedCalendar;
-      state.lastBulkCancelTarget = withTarget.lastBulkCancelTarget;
+      state.cachedCalendar = cached.cachedCalendar;
       result = {
         count: events.length,
         events: events.map(e => ({

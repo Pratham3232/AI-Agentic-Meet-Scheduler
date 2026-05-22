@@ -1,6 +1,7 @@
 import {
   initBookingJob,
   executeBookingBatch,
+  runBookingJobToCompletion,
   getBookingProgress,
   evaluateInitBookingBlock,
   type InitBookingJobResult,
@@ -103,6 +104,75 @@ describe('booking-executor', () => {
     expect(mockedCreate).not.toHaveBeenCalled();
   });
 
+  test('blocks init when sseInProgress on existing job', async () => {
+    const { job } = await mustInit([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
+    ]);
+    const inSse: typeof job = {
+      ...job,
+      sseInProgress: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const blocked = await evaluateInitBookingBlock(
+      [{ day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' }],
+      'UTC',
+      inSse
+    );
+    expect(blocked?.error).toBe('job_already_done');
+    expect(blocked?.message).toMatch(/progress bar/i);
+  });
+
+  test('executeBookingBatch no-ops when sseInProgress', async () => {
+    const { job } = await mustInit([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
+    ]);
+    const inSse = {
+      ...job,
+      sseInProgress: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const result = await executeBookingBatch(inSse, 5);
+    expect(result.done).toBe(false);
+    expect(result.bookedThisBatch).toBe(0);
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(result.hint).toMatch(/BOOKING_COMPLETE/);
+  });
+
+  test('runBookingJobToCompletion books all items when job already has sseInProgress', async () => {
+    const { job } = await mustInit([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
+      { day: '2026-05-21', start: '2026-05-21T14:00:00Z', end: '2026-05-21T15:00:00Z', summary: 'B' },
+    ]);
+    const inSse = {
+      ...job,
+      sseInProgress: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const progressEvents: number[] = [];
+    const { progress } = await runBookingJobToCompletion(inSse, 5, p => {
+      progressEvents.push(p.booked);
+    });
+    expect(progress.pending).toBe(0);
+    expect(progress.booked).toBe(2);
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+    expect(progressEvents.length).toBeGreaterThan(0);
+  });
+
+  test('executeBookingBatch books when sseInProgress with fromSseLoop', async () => {
+    const { job } = await mustInit([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
+    ]);
+    const inSse = {
+      ...job,
+      sseInProgress: true,
+      updatedAt: new Date().toISOString(),
+    };
+    const result = await executeBookingBatch(inSse, 5, undefined, { fromSseLoop: true });
+    expect(result.bookedThisBatch).toBe(1);
+    expect(result.done).toBe(true);
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+  });
+
   test('blocks duplicate init for same fingerprint', async () => {
     const first = await initBookingJob([
       { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
@@ -114,6 +184,21 @@ describe('booking-executor', () => {
       first.job
     );
     expect('error' in second).toBe(true);
+  });
+
+  test('blocks re-init when job in_progress with pending > 0 (different fingerprint)', async () => {
+    const first = await initBookingJob([
+      { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'A' },
+      { day: '2026-05-21', start: '2026-05-21T14:00:00Z', end: '2026-05-21T15:00:00Z', summary: 'B' },
+    ]);
+    if ('error' in first) throw new Error('expected success');
+    const blocked = await evaluateInitBookingBlock(
+      [{ day: '2026-05-22', start: '2026-05-22T14:00:00Z', end: '2026-05-22T15:00:00Z', summary: 'C' }],
+      'UTC',
+      first.job
+    );
+    expect(blocked?.error).toBe('job_already_done');
+    expect(blocked?.message).toMatch(/progress bar/i);
   });
 
   test('blocks re-init when calendar already has events (different fingerprint)', async () => {

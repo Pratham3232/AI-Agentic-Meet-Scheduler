@@ -43,6 +43,43 @@ describe('RealtimeResponseGate', () => {
     expect(parse().filter(p => p.type === 'response.create')).toHaveLength(1);
   });
 
+  test('requestCompletionResponse fires even when continuationSentForTurn is set', () => {
+    const { gate, parse } = setup();
+    gate.registerFunctionCall('c1');
+    gate.submitToolResult('c1', { ok: true });
+    expect(parse().filter(p => p.type === 'response.create')).toHaveLength(1);
+
+    gate.requestCompletionResponse('Confirm all meetings are booked.');
+    const creates = parse().filter(p => p.type === 'response.create');
+    expect(creates).toHaveLength(2);
+    expect(creates[1].response?.instructions).toContain('Confirm all meetings');
+  });
+
+  test('requestCompletionResponse waits for active response then fires on response ended', () => {
+    const { gate, parse } = setup();
+    gate.onResponseCreated('resp_1');
+    gate.requestCompletionResponse('All meetings booked.');
+    expect(parse().filter(p => p.type === 'response.create')).toHaveLength(0);
+
+    gate.onResponseEnded();
+    const creates = parse().filter(p => p.type === 'response.create');
+    expect(creates).toHaveLength(1);
+    expect(creates[0].response?.instructions).toBe('All meetings booked.');
+  });
+
+  test('completion response takes priority over tool flush on response ended', () => {
+    const { gate, parse } = setup();
+    gate.onResponseCreated('resp_1');
+    gate.registerFunctionCall('c1');
+    gate.submitToolResult('c1', { ok: true });
+    gate.requestCompletionResponse('Done.');
+    gate.onResponseEnded();
+
+    const creates = parse().filter(p => p.type === 'response.create');
+    expect(creates).toHaveLength(1);
+    expect(creates[0].response?.instructions).toBe('Done.');
+  });
+
   test('blocks second response.create while first response still active', () => {
     const { gate, parse } = setup();
     gate.onResponseCreated('resp_1');

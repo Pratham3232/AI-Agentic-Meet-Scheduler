@@ -76,6 +76,24 @@ export function resolveFirstWeekOfMonth(
   };
 }
 
+/** Last occurrence of a weekday (getDay: 0=Sun … 5=Fri) in a calendar month. */
+export function resolveLastWeekdayOfMonth(
+  year: number,
+  month: number,
+  weekdayIndex: number,
+  timezone: string
+): string {
+  const lastDayNum = getDaysInMonth(monthAnchor(year, month, 1, timezone));
+  for (let d = lastDayNum; d >= 1; d--) {
+    const anchor = monthAnchor(year, month, d, timezone);
+    if (getDay(anchor) === weekdayIndex) {
+      return isoDayInTz(anchor, timezone);
+    }
+  }
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${year}-${pad(month)}-${pad(lastDayNum)}`;
+}
+
 /** Mon–Sun week that contains the last calendar day of the month. */
 export function resolveLastWeekOfMonth(
   year: number,
@@ -121,6 +139,98 @@ export function resolveWeekdaysInRange(
 
 /** Mon=1 … Fri=5 in getDay: Monday=1, Friday=5 */
 const MON_FRI = [1, 2, 3, 4, 5];
+
+const WEEKDAY_NAME_TO_INDEX: Record<string, number> = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6,
+};
+
+function tryParseLastWeekdayOfMonth(
+  lower: string,
+  timezone: string,
+  today: Date
+): string[] | null {
+  const dayMatch = lower.match(
+    /\blast\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/
+  );
+  if (!dayMatch) return null;
+
+  const weekdayIndex = WEEKDAY_NAME_TO_INDEX[dayMatch[1]];
+  if (weekdayIndex === undefined) return null;
+
+  const monthOffset =
+    /\bnext month\b/.test(lower) ? 1 :
+    /\bthis month\b/.test(lower) ? 0 :
+    null;
+
+  let year: number;
+  let month: number;
+
+  const namedMonth = parseNamedMonth(lower, today, timezone);
+  if (namedMonth) {
+    year = namedMonth.year;
+    month = namedMonth.month;
+  } else if (monthOffset !== null) {
+    const current = parseYearMonth(formatInTimeZone(today, timezone, 'yyyy-MM'));
+    const target = shiftYearMonth(current.year, current.month, monthOffset);
+    year = target.year;
+    month = target.month;
+  } else {
+    return null;
+  }
+
+  const iso = resolveLastWeekdayOfMonth(year, month, weekdayIndex, timezone);
+  return filterFutureDays([iso], timezone, today);
+}
+
+function tryParseNamedMonthDayRange(
+  lower: string,
+  timezone: string,
+  today: Date
+): string[] | null {
+  const monthNames = [...new Set(Object.keys(MONTH_NAMES))].sort(
+    (a, b) => b.length - a.length
+  );
+  for (const name of monthNames) {
+    const pat = new RegExp(
+      `\\b${name}\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:to|through|-)\\s*(?:${name}\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\b`
+    );
+    const match = lower.match(pat);
+    if (!match) continue;
+
+    const monthNum = MONTH_NAMES[name];
+    const year = today.getFullYear();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const startDay = parseInt(match[1], 10);
+    const endDay = parseInt(match[2], 10);
+    if (startDay > endDay || endDay - startDay > 30) continue;
+
+    const days: string[] = [];
+    for (let d = startDay; d <= endDay; d++) {
+      days.push(`${year}-${pad(monthNum)}-${pad(d)}`);
+    }
+
+    const wantsWeekdays =
+      /\bweekdays?\b/.test(lower) ||
+      /\bmonday\s*(?:through|to|-)\s*friday\b/.test(lower) ||
+      /\bmon\s*[-–]\s*fri\b/i.test(lower);
+
+    const filtered = wantsWeekdays
+      ? days.filter(day => {
+          const anchor = fromZonedTime(`${day}T12:00:00`, timezone);
+          return MON_FRI.includes(getDay(anchor));
+        })
+      : days;
+
+    return filterFutureDays(filtered, timezone, today);
+  }
+  return null;
+}
 
 /** All Mon–Fri dates within a calendar month (user timezone). */
 export function resolveAllWeekdaysInMonth(
@@ -265,6 +375,12 @@ export function parseBookingDayRequest(
 
   const monFriWeek = tryParseMondayToFridayRange(lower, timezone, today);
   if (monFriWeek && monFriWeek.length > 0) return monFriWeek;
+
+  const lastWeekday = tryParseLastWeekdayOfMonth(lower, timezone, today);
+  if (lastWeekday && lastWeekday.length > 0) return lastWeekday;
+
+  const monthRange = tryParseNamedMonthDayRange(lower, timezone, today);
+  if (monthRange && monthRange.length > 0) return monthRange;
 
   const startingFromMatch = lower.match(/\b(?:starting|start|from|beginning)\s+(?:from\s+)?(?:on\s+)?/);
   if (startingFromMatch) {

@@ -1,4 +1,4 @@
-import { parseISO } from 'date-fns';
+import { addMinutes, parseISO } from 'date-fns';
 import { formatInTimeZone } from 'date-fns-tz';
 import type { CalendarEvent, ConversationState } from '@/types';
 import { formatTimeSlot } from '@/lib/calendar/utils';
@@ -309,12 +309,13 @@ export async function runIdentifyEvent(
 
 export async function runRescheduleEvent(
   eventId: string,
-  newStartTime: string,
-  newEndTime: string,
+  newStartTime: string | undefined,
+  newEndTime: string | undefined,
   confirmed: boolean,
   timezone: string,
   state?: ConversationState,
-  debug?: DebugLogger
+  debug?: DebugLogger,
+  shiftMinutes?: number
 ): Promise<{ result: RescheduleResult; stateUpdates: Partial<ConversationState> }> {
   let existing: CalendarEvent | null = null;
 
@@ -364,17 +365,39 @@ export async function runRescheduleEvent(
     };
   }
 
+  let resolvedStart = newStartTime;
+  let resolvedEnd = newEndTime;
+  if (shiftMinutes !== undefined && Number.isFinite(shiftMinutes)) {
+    resolvedStart = addMinutes(
+      parseISO(existing.start.dateTime),
+      shiftMinutes
+    ).toISOString();
+    resolvedEnd = addMinutes(
+      parseISO(existing.end.dateTime),
+      shiftMinutes
+    ).toISOString();
+  } else if (!resolvedStart || !resolvedEnd) {
+    return {
+      result: {
+        success: false,
+        error: 'Provide newStartTime and newEndTime, or shiftMinutes for relative moves.',
+        hint: 'For "30 minutes earlier/later", use shiftMinutes: -30 or +30 instead of manual ISO times.',
+      },
+      stateUpdates: {},
+    };
+  }
+
   const oldDisplay = formatTimeSlot(
     { start: existing.start.dateTime, end: existing.end.dateTime },
     timezone
   );
   const newDisplay = formatTimeSlot(
-    { start: newStartTime, end: newEndTime },
+    { start: resolvedStart, end: resolvedEnd },
     timezone
   );
 
   if (!confirmed) {
-    const free = await isSlotFree(newStartTime, newEndTime);
+    const free = await isSlotFree(resolvedStart, resolvedEnd);
     if (!free) {
       return {
         result: {
@@ -391,8 +414,8 @@ export async function runRescheduleEvent(
                 oldEnd: existing.end.dateTime,
                 oldDisplay,
                 day: formatInTimeZone(parseISO(existing.start.dateTime), timezone, 'yyyy-MM-dd'),
-                newStartTime,
-                newEndTime,
+                newStartTime: resolvedStart,
+                newEndTime: resolvedEnd,
                 newDisplay,
               },
             }
@@ -408,8 +431,8 @@ export async function runRescheduleEvent(
             oldEnd: existing.end.dateTime,
             oldDisplay,
             day: formatInTimeZone(parseISO(existing.start.dateTime), timezone, 'yyyy-MM-dd'),
-            newStartTime,
-            newEndTime,
+            newStartTime: resolvedStart,
+            newEndTime: resolvedEnd,
             newDisplay,
           },
           awaitingConfirmation: true,
@@ -420,15 +443,16 @@ export async function runRescheduleEvent(
         eventId,
         oldDisplay,
         newDisplay,
-        newStartTime,
-        newEndTime,
+        newStartTime: resolvedStart,
+        newEndTime: resolvedEnd,
         needsConfirmation: true,
+        ...(shiftMinutes !== undefined ? { shiftMinutes } : {}),
       },
       stateUpdates,
     };
   }
 
-  const free = await isSlotFree(newStartTime, newEndTime);
+  const free = await isSlotFree(resolvedStart, resolvedEnd);
   if (!free) {
     debug?.log({
       type: 'reschedule_execute',
@@ -451,15 +475,15 @@ export async function runRescheduleEvent(
   const stableId = existing.id ?? eventId;
 
   try {
-    const patched = await patchEvent(stableId, newStartTime, newEndTime, summary);
+    const patched = await patchEvent(stableId, resolvedStart, resolvedEnd, summary);
     const display = formatTimeSlot(
       {
-        start: patched.start?.dateTime || newStartTime,
-        end: patched.end?.dateTime || newEndTime,
+        start: patched.start?.dateTime || resolvedStart,
+        end: patched.end?.dateTime || resolvedEnd,
       },
       timezone
     );
-    const day = formatInTimeZone(parseISO(newStartTime), timezone, 'yyyy-MM-dd');
+    const day = formatInTimeZone(parseISO(resolvedStart), timezone, 'yyyy-MM-dd');
 
     debug?.log({
       type: 'reschedule_execute',
@@ -474,8 +498,8 @@ export async function runRescheduleEvent(
             state,
             stableId,
             summary,
-            patched.start?.dateTime || newStartTime,
-            patched.end?.dateTime || newEndTime,
+            patched.start?.dateTime || resolvedStart,
+            patched.end?.dateTime || resolvedEnd,
             timezone
           );
           next = setPendingReschedule(next, null);

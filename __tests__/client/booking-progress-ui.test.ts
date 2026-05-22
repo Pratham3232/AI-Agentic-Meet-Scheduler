@@ -61,6 +61,21 @@ describe('booking-progress-ui', () => {
     expect(withProgress[0].bookingProgress?.booked).toBe(5);
   });
 
+  test('upsertBookingProgressMessage preserves assistant transcript on SSE update', () => {
+    const progress = snap({ booked: 2, pending: 3, percent: 40 });
+    const messages = [
+      { role: 'user', content: 'book yoga' },
+      {
+        role: 'assistant',
+        content: 'Confirming 3 sessions.',
+        bookingProgress: snap({ booked: 0, pending: 5, percent: 0 }),
+      },
+    ];
+    const updated = upsertBookingProgressMessage(messages, progress);
+    expect(updated[1].content).toBe('Confirming 3 sessions.');
+    expect(updated[1].bookingProgress?.booked).toBe(2);
+  });
+
   test('attachToLastAssistant merges progress into latest assistant bubble', () => {
     const progress = snap({ booked: 0, pending: 3 });
     const messages = [

@@ -25,6 +25,11 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
             type: 'string',
             description: 'End of requested range if user said "9 to 11" (e.g. "11:00" or "11 AM")',
           },
+          bufferAfterLastMeetingMinutes: {
+            type: 'number',
+            description:
+              'When user needs time after their last meeting (decompress/buffer), set minutes (e.g. 60). Server finds last event end on day — do not ask user when last meeting ends.',
+          },
         },
         required: ['duration', 'day', 'timeWindow'],
         additionalProperties: false,
@@ -224,16 +229,20 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
     function: {
       name: 'reschedule_event',
       description:
-        'Reschedule an event by ID from identify_event. Set confirmed=false for preview; confirmed=true after user says yes (deletes old, creates new).',
+        'Reschedule an event by ID from identify_event. Set confirmed=false for preview; confirmed=true after user says yes. For "N minutes earlier/later", use shiftMinutes (e.g. -30, +30) — do not guess ISO times.',
       parameters: {
         type: 'object',
         properties: {
           eventId: { type: 'string', description: 'Event ID from identify_event' },
-          newStartTime: { type: 'string', description: 'New start UTC ISO' },
-          newEndTime: { type: 'string', description: 'New end UTC ISO' },
+          newStartTime: { type: 'string', description: 'New start ISO (optional if shiftMinutes set)' },
+          newEndTime: { type: 'string', description: 'New end ISO (optional if shiftMinutes set)' },
+          shiftMinutes: {
+            type: 'number',
+            description: 'Relative move: negative = earlier, positive = later (preserves duration)',
+          },
           confirmed: { type: 'boolean', description: 'false = preview only; true = execute' },
         },
-        required: ['eventId', 'newStartTime', 'newEndTime', 'confirmed'],
+        required: ['eventId', 'confirmed'],
         additionalProperties: false,
       },
     },

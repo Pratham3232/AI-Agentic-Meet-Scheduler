@@ -2,6 +2,7 @@ import {
   isMultiDayRangeMessage,
   parseBookingDayRequest,
   resolveFirstWeekOfMonth,
+  resolveLastWeekdayOfMonth,
   resolveWeekdaysInRange,
 } from '@/lib/agent/booking-days';
 
@@ -100,6 +101,34 @@ describe('booking-days', () => {
     expect(days).not.toBeNull();
     expect(days!.every(d => d >= '2026-05-21')).toBe(true);
     expect(days!.some(d => d < '2026-05-21')).toBe(false);
+  });
+
+  test('last Friday of this month resolves 2026-05-29', () => {
+    const days = parseBookingDayRequest(
+      'book 30 minutes in the morning on last Friday of this month',
+      TZ,
+      TODAY
+    );
+    expect(days).toEqual(['2026-05-29']);
+  });
+
+  test('resolveLastWeekdayOfMonth returns last Friday in May 2026', () => {
+    expect(resolveLastWeekdayOfMonth(2026, 5, 5, TZ)).toBe('2026-05-29');
+  });
+
+  test('May 25 to May 29 resolves inclusive range', () => {
+    const days = parseBookingDayRequest(
+      'sync up meet from May 25 to May 29',
+      TZ,
+      TODAY
+    );
+    expect(days).toEqual([
+      '2026-05-25',
+      '2026-05-26',
+      '2026-05-27',
+      '2026-05-28',
+      '2026-05-29',
+    ]);
   });
 
   test('last week of july weekdays resolves Mon–Fri in July 2026', () => {

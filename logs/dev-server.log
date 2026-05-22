@@ -1,0 +1,228 @@
+
+> smart-scheduler@1.0.0 dev
+> next dev -p 3002
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3002
+  - Environments: .env.local
+
+ ✓ Starting...
+ ✓ Ready in 1310ms
+ ✓ Compiled /middleware in 73ms (72 modules)
+ ✓ Compiled / in 499ms (475 modules)
+ GET / 200 in 594ms
+ ✓ Compiled /api/auth/status in 55ms (279 modules)
+ GET /api/auth/status 200 in 91ms
+ GET /api/auth/status 200 in 2ms
+ ✓ Compiled /api/realtime/session in 174ms (281 modules)
+[PERF][realtime/session] OpenAI client_secrets fetch: 1068ms
+[PERF][realtime/session] total: 1069ms
+ POST /api/realtime/session 200 in 1262ms
+ ○ Compiling /api/realtime/tools ...
+ ✓ Compiled /api/realtime/tools in 946ms (1641 modules)
+[PERF][session] getSession: 119ms
+[SCHEDULER:tool_call] tool=find_free_slots args={"day":"2026-05-29","timeWindow":"morning","duration":30}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+(node:38688) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+[SCHEDULER:freebusy_result] busy=2 free=4 strategy=primary_window
+[PERF][realtime/tools] tool=find_free_slots: 786ms
+[PERF][session] saveSession: 33ms
+[PERF][realtime/tools] total (find_free_slots): 939ms
+ POST /api/realtime/tools 200 in 2739ms
+[PERF][session] getSession: 96ms
+[SCHEDULER:tool_call] tool=create_event args={"summary":"Meeting","startTime":"2026-05-29T05:00:00.000Z","endTime":"2026-05-29T05:30:00.000Z"}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] createEvent: 1000ms
+[PERF][realtime/tools] tool=create_event: 1642ms
+[PERF][session] saveSession: 40ms
+[PERF][realtime/tools] total (create_event): 1779ms
+ POST /api/realtime/tools 200 in 1788ms
+[PERF][session] getSession: 136ms
+[SCHEDULER:tool_call] tool=plan_multi_day_bookings args={"durationMinutes":30,"preferredTime":"7:00 PM","dayPattern":{"week":"last","monthOffset":0},"userMessage":"daily at 7 PM from May 25 to May 29","summary":"Weekly sync-up meeting"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[realtime/tools] error: The specified time range is empty.
+[PERF][realtime/tools] total (error): 1274ms
+ POST /api/realtime/tools 500 in 1281ms
+[PERF][session] getSession: 99ms
+[SCHEDULER:tool_call] tool=plan_multi_day_bookings args={"durationMinutes":30,"preferredTime":"7:00 PM","days":["2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29"],"summary":"Weekly sync-up meeting"}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[realtime/tools] error: The specified time range is empty.
+[PERF][realtime/tools] total (error): 1044ms
+ POST /api/realtime/tools 500 in 1055ms
+[PERF][session] getSession: 34ms
+[SCHEDULER:tool_call] tool=find_free_slots args={"day":"2026-05-25","timeWindow":"evening","duration":30,"preferredStartTime":"7:00 PM"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[SCHEDULER:tool_result] tool=list_events 1 event(s) found
+[PERF][calendar] listEvents: 502ms (1)
+[PERF][realtime/tools] tool=find_free_slots: 1520ms
+[PERF][session] saveSession: 34ms
+[PERF][realtime/tools] total (find_free_slots): 1588ms
+ POST /api/realtime/tools 200 in 1596ms
+[PERF][session] getSession: 147ms
+[SCHEDULER:tool_call] tool=plan_multi_day_bookings args={"durationMinutes":30,"preferredTime":"8:00 PM","days":["2026-05-25","2026-05-26","2026-05-27","2026-05-28","2026-05-29"],"summary":"Weekly sync-up meeting"}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=plan_multi_day_bookings 5 auto, 0 conflicts
+[PERF][realtime/tools] tool=plan_multi_day_bookings: 2622ms
+[PERF][session] saveSession: 37ms
+[PERF][realtime/tools] total (plan_multi_day_bookings): 2806ms
+ POST /api/realtime/tools 200 in 2816ms
+[PERF][session] getSession: 197ms
+[SCHEDULER:tool_call] tool=init_booking_job args={"entries":[{"day":"2026-05-25","start":"2026-05-25T14:30:00.000Z","end":"2026-05-25T15:00:00.000Z","summary":"Weekly sync-up meeting"},{"day":"2026-05-26","start":"2026-05-26T14:30:00.000Z","end":"2026-05-26T15:00:00.000Z","summary":"Weekly sync-up meeting"},{"day":"2026-05-27","start":"2026-05-27T14:30:00.000Z","end":"2026-05-27T15:00:00.000Z","summary":"Weekly sync-up meeting"},{"day":"2026-05-28","start":"2026-05-28T14:30:00.000Z","end":"2026-05-28T15:00:00.000Z","summary":"Weekly sync-up meeting"},{"day":"2026-05-29","start":"2026-05-29T14:30:00.000Z","end":"2026-05-29T15:00:00.000Z","summary":"Weekly sync-up meeting"}]}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] listEventsPaginated: 634ms (19)
+[BOOKING] init jobId=5bc98a45-d0fe-49d5-a4e1-eb8376c9f5b7 total=5 days=[2026-05-25,2026-05-26,2026-05-27,2026-05-28,2026-05-29]
+[PERF][realtime/tools] tool=init_booking_job: 638ms
+[PERF][session] saveSession: 32ms
+[PERF][realtime/tools] total (init_booking_job): 868ms
+ POST /api/realtime/tools 200 in 874ms
+ ✓ Compiled /api/booking/run in 372ms (1640 modules)
+[PERF][session] getSession: 31ms
+[PERF][session] saveSession: 95ms
+[BOOKING] SSE start session=b7baf5af-e392-4ccb-9bd1-7068bb70076f job=5bc98a45-d0fe-49d5-a4e1-eb8376c9f5b7 pending=5
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=list_events 19 event(s) found
+[PERF][calendar] listEvents: 510ms (19)
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[BOOKING] 2026-05-25 action=create isSlotFree=true
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] createEvent: 738ms
+[BOOKING] 2026-05-25 action=booked eventId=hs00laqb70a34i8v0ru94kjme8
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[BOOKING] 2026-05-26 action=create isSlotFree=true
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] createEvent: 797ms
+[BOOKING] 2026-05-26 action=booked eventId=icpfpa3l8s84440jmqc086m0r8
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[BOOKING] 2026-05-27 action=create isSlotFree=true
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] createEvent: 817ms
+[BOOKING] 2026-05-27 action=booked eventId=gc02v8327jk0hfkkq10fb6hcb8
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[BOOKING] 2026-05-28 action=create isSlotFree=true
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] createEvent: 834ms
+[BOOKING] 2026-05-28 action=booked eventId=l3mrlm3rgllcib01r0732f88ug
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[BOOKING] 2026-05-29 action=create isSlotFree=true
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] createEvent: 737ms
+[BOOKING] 2026-05-29 action=booked eventId=6h5r9ttpg6etq75255flvi2omk
+[BOOKING] batch done booked=5 failed=0 pending=0 done=true
+[BOOKING] SSE end session=b7baf5af-e392-4ccb-9bd1-7068bb70076f booked=5 failed=0
+[PERF][session] saveSession: 115ms
+[PERF][session] saveSession: 115ms
+ POST /api/booking/run 200 in 8144ms
+ ✓ Compiled /api/booking/progress in 96ms (1642 modules)
+[PERF][session] getSession: 30ms
+ GET /api/booking/progress?sessionId=b7baf5af-e392-4ccb-9bd1-7068bb70076f 200 in 416ms
+[PERF][session] getSession: 114ms
+[SCHEDULER:tool_call] tool=list_events args={"timeMin":"2026-05-23T00:00:00Z","timeMax":"2026-05-23T23:59:59Z"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=list_events 1 event(s) found (paginated)
+[PERF][calendar] listEventsPaginated: 644ms (1)
+[PERF][realtime/tools] tool=list_events: 652ms
+[PERF][session] saveSession: 33ms
+[PERF][realtime/tools] total (list_events): 800ms
+ POST /api/realtime/tools 200 in 819ms
+[PERF][session] getSession: 113ms
+[SCHEDULER:tool_call] tool=identify_event args={"day":"2026-05-23","timeMin":"2026-05-23T00:00:00Z","timeMax":"2026-05-23T23:59:59Z","summaryHint":"Project Alpha kickoff"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=list_events 1 event(s) found
+[PERF][calendar] listEvents: 667ms (1)
+[RESCHEDULE] identify listed=1 best=frctq7qmv8lc30bcaj4o5varko ambiguous=false
+[PERF][realtime/tools] tool=identify_event: 673ms
+[PERF][session] saveSession: 33ms
+[PERF][realtime/tools] total (identify_event): 819ms
+ POST /api/realtime/tools 200 in 839ms
+[PERF][session] getSession: 96ms
+[SCHEDULER:tool_call] tool=reschedule_event args={"eventId":"frctq7qmv8lc30bcaj4o5varko","shiftMinutes":-30,"confirmed":true}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getEventById: 652ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] patchEvent: 1037ms
+[RESCHEDULE] eventId=frctq7qmv8lc30bcaj4o5varko confirmed=true success=true
+[PERF][realtime/tools] tool=reschedule_event: 2195ms
+[PERF][session] saveSession: 33ms
+[PERF][realtime/tools] total (reschedule_event): 2325ms
+ POST /api/realtime/tools 200 in 2330ms
+ ✓ Compiled /api/realtime/session in 254ms (1639 modules)
+[PERF][realtime/session] OpenAI client_secrets fetch: 1728ms
+[PERF][realtime/session] total: 1729ms
+ POST /api/realtime/session 200 in 2005ms
+[PERF][session] getSession: 106ms
+[SCHEDULER:tool_call] tool=list_events args={"timeMin":"2026-05-25T00:00:00Z","timeMax":"2026-05-25T23:59:59Z"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=list_events 7 event(s) found (paginated)
+[PERF][calendar] listEventsPaginated: 670ms (7)
+[PERF][realtime/tools] tool=list_events: 673ms
+[PERF][session] saveSession: 33ms
+[PERF][realtime/tools] total (list_events): 814ms
+ POST /api/realtime/tools 200 in 868ms
+[PERF][session] getSession: 144ms
+[SCHEDULER:tool_call] tool=delete_event args={"eventId":"nuonbrcp3mtef4ngfv8gfuab04"}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] deleteEvent: 874ms
+[PERF][realtime/tools] tool=delete_event: 875ms
+[PERF][session] saveSession: 35ms
+[PERF][realtime/tools] total (delete_event): 1057ms
+ POST /api/realtime/tools 200 in 1069ms
+[PERF][session] getSession: 98ms
+[SCHEDULER:tool_call] tool=list_events args={"timeMin":"2026-05-25T00:00:00Z","timeMax":"2026-05-26T23:59:59Z"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=list_events 12 event(s) found (paginated)
+[PERF][calendar] listEventsPaginated: 647ms (12)
+[PERF][realtime/tools] tool=list_events: 651ms
+[PERF][session] saveSession: 38ms
+[PERF][realtime/tools] total (list_events): 788ms
+ POST /api/realtime/tools 200 in 814ms
+[PERF][session] getSession: 144ms
+[SCHEDULER:tool_call] tool=find_free_slots args={"day":"2026-05-27","timeWindow":"morning","duration":15,"preferredStartTime":"9:00","preferredEndTime":"12:00"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:freebusy_result] busy=3 free=5 strategy=primary_window
+[PERF][realtime/tools] tool=find_free_slots: 593ms
+[PERF][session] saveSession: 34ms
+[PERF][realtime/tools] total (find_free_slots): 771ms
+ POST /api/realtime/tools 200 in 789ms
+[PERF][session] getSession: 109ms
+[SCHEDULER:tool_call] tool=create_event args={"summary":"Quick 15-minute chat","startTime":"2026-05-27T05:00:00.000Z","endTime":"2026-05-27T05:15:00.000Z"}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] createEvent: 799ms
+[PERF][realtime/tools] tool=create_event: 1427ms
+[PERF][session] saveSession: 36ms
+[PERF][realtime/tools] total (create_event): 1572ms
+ POST /api/realtime/tools 200 in 1582ms
+[PERF][session] getSession: 131ms
+[SCHEDULER:tool_call] tool=find_free_slots args={"day":"2026-05-25","timeWindow":"evening","duration":15,"preferredStartTime":"20:00","bufferAfterLastMeetingMinutes":60}
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[SCHEDULER:tool_result] tool=list_events 5 event(s) found
+[PERF][calendar] listEvents: 641ms (5)
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 1ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[SCHEDULER:tool_result] tool=list_events 1 event(s) found
+[PERF][calendar] listEvents: 510ms (1)
+[PERF][realtime/tools] tool=find_free_slots: 2187ms
+[PERF][session] saveSession: 34ms
+[PERF][realtime/tools] total (find_free_slots): 2353ms
+ POST /api/realtime/tools 200 in 2363ms
+[PERF][session] getSession: 140ms
+[SCHEDULER:tool_call] tool=create_event args={"summary":"Quick 15-minute chat","startTime":"2026-05-25T16:00:00.000Z","endTime":"2026-05-25T16:15:00.000Z"}
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] getCalendarClient (env-auth): 0ms
+[PERF][calendar] createEvent: 788ms
+[PERF][realtime/tools] tool=create_event: 1349ms
+[PERF][session] saveSession: 33ms
+[PERF][realtime/tools] total (create_event): 1525ms
+ POST /api/realtime/tools 200 in 1558ms

@@ -42,4 +42,25 @@ describe('resolvePlanDays', () => {
       '2026-06-05',
     ]);
   });
+
+  test('prefers explicit days[] over dayPattern monthOffset when userMessage does not parse', () => {
+    const resolved = resolvePlanDays(['2026-05-24'], TZ, {
+      dayPattern: { monthOffset: 0, weekdaysOnly: false },
+      userMessage: 'three 2-hour meetings on Sunday each with a gap of 1 hour',
+    }, TODAY);
+    expect(resolved).toEqual(['2026-05-24']);
+  });
+
+  test('undefined days[] does not throw', () => {
+    expect(() =>
+      resolvePlanDays(undefined, TZ, {
+        dayPattern: { monthOffset: 0, week: 'last' },
+        userMessage: 'last Friday of this month',
+      }, TODAY)
+    ).not.toThrow();
+    const resolved = resolvePlanDays(undefined, TZ, {
+      userMessage: 'last Friday of this month',
+    }, TODAY);
+    expect(resolved).toEqual(['2026-05-29']);
+  });
 });

@@ -124,4 +124,37 @@ describe('runRescheduleEvent chained', () => {
     expect(result).toMatchObject({ success: true, eventId: 'evt-stable' });
     expect(mockedPatch).toHaveBeenCalled();
   });
+
+  test('shiftMinutes -30 moves start and end by 30 minutes', async () => {
+    mockedGet.mockResolvedValue({
+      id: 'evt-alpha',
+      summary: 'Kickoff',
+      start: { dateTime: '2026-05-23T10:00:00.000Z' },
+      end: { dateTime: '2026-05-23T10:30:00.000Z' },
+    });
+    mockedPatch.mockResolvedValue({
+      id: 'evt-alpha',
+      summary: 'Kickoff',
+      start: { dateTime: '2026-05-23T09:30:00.000Z' },
+      end: { dateTime: '2026-05-23T10:00:00.000Z' },
+    });
+
+    await runRescheduleEvent(
+      'evt-alpha',
+      undefined,
+      undefined,
+      true,
+      'UTC',
+      baseState(),
+      undefined,
+      -30
+    );
+
+    expect(mockedPatch).toHaveBeenCalledWith(
+      'evt-alpha',
+      '2026-05-23T09:30:00.000Z',
+      '2026-05-23T10:00:00.000Z',
+      'Kickoff'
+    );
+  });
 });

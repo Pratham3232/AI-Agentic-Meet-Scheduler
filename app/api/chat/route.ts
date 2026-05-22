@@ -22,7 +22,6 @@ import {
   initCancelJob,
   executeCancelBatch,
   getCancelProgress,
-  setLastBulkCancelTarget,
 } from '@/lib/agent/cancel-executor';
 import { tryReconcileCreateEventWithBookingJob } from '@/lib/agent/booking-context';
 import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
@@ -452,10 +451,11 @@ async function executeTool(
 
   // ── reschedule_event ──────────────────────────────────────────────────────
   if (toolName === 'reschedule_event') {
-    const { eventId, newStartTime, newEndTime, confirmed } = args as {
+    const { eventId, newStartTime, newEndTime, confirmed, shiftMinutes } = args as {
       eventId: string;
-      newStartTime: string;
-      newEndTime: string;
+      newStartTime?: string;
+      newEndTime?: string;
+      shiftMinutes?: number;
       confirmed: boolean;
     };
     const { result, stateUpdates } = await runRescheduleEvent(
@@ -465,7 +465,8 @@ async function executeTool(
       confirmed,
       timezone,
       state,
-      debug
+      debug,
+      shiftMinutes
     );
     console.log(`[PERF][chat] executeTool reschedule_event: ${Date.now() - tExec}ms`);
     return { toolResult: result, stateUpdates };
@@ -567,20 +568,18 @@ async function executeTool(
     };
 
     const cached = updateEventCache(state, timeMin, timeMax, events, timezone);
-    const withTarget = setLastBulkCancelTarget(cached, timeMin, timeMax, cached.cachedCalendar!.events);
     console.log(`[PERF][chat] executeTool list_events: ${Date.now() - tExec}ms`);
     return {
       toolResult: {
         ...toolResult,
         hint:
           events.length > 7
-            ? `${events.length} events found. For bulk cancel, confirm count with user then init_cancel_job — do not list every title.`
+            ? `${events.length} events found. For bulk cancel, confirm count with user then init_cancel_job with eventIds [] — do not list every title.`
             : undefined,
       },
       stateUpdates: {
-        cachedCalendar: withTarget.cachedCalendar,
+        cachedCalendar: cached.cachedCalendar,
         calendarVersion: state.calendarVersion,
-        lastBulkCancelTarget: withTarget.lastBulkCancelTarget,
       },
     };
   }

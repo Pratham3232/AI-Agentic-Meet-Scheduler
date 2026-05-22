@@ -3,6 +3,7 @@ import { formatInTimeZone } from 'date-fns-tz';
 import { formatTimeSlot } from '../calendar/utils';
 import {
   CONFLICT_HANDLING_RULES,
+  BUFFER_AFTER_LAST_MEETING_RULES,
   PROXIMITY_SLOT_RULES,
   WORKING_HOURS_POLICY,
   MULTI_DAY_BOOKING_RULES,
@@ -162,6 +163,8 @@ ${isStale ? `9. STALE SEARCH: user changed a requirement. You MUST call find_fre
 ${CONFLICT_HANDLING_RULES}
 
 ${PROXIMITY_SLOT_RULES}
+
+${BUFFER_AFTER_LAST_MEETING_RULES}
 
 ## Cancel / Delete (execute automatically)
 When the user asks to cancel or delete a meeting:

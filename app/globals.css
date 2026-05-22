@@ -249,6 +249,41 @@ body {
   transform: none;
 }
 
+.multi-day-plan {
+  margin: 0.5rem 0 0.75rem 3.25rem;
+  max-width: 520px;
+}
+
+.plan-section + .plan-section {
+  margin-top: 0.75rem;
+}
+
+.plan-section-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #6c757d;
+  margin-bottom: 0.35rem;
+}
+
+.plan-conflict {
+  border-color: #f5c2c7;
+  background: #fff5f5;
+}
+
+.plan-ok {
+  border-color: #badbcc;
+  background: #f8fff9;
+}
+
+.plan-blockers,
+.plan-alt {
+  font-size: 0.8rem;
+  color: #495057;
+  line-height: 1.35;
+}
+
 .event-number {
   background: #495057;
 }

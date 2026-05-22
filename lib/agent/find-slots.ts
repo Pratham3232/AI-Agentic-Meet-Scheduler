@@ -5,6 +5,7 @@ import { resolveConflict } from '@/lib/agent/conflict-resolver';
 import { DebugLogger } from '@/lib/debug';
 import { SearchParams, TimeSlot, WorkingHours } from '@/types';
 import { addMinutes, parseISO } from 'date-fns';
+import { fromZonedTime } from 'date-fns-tz';
 
 export interface FindFreeSlotsArgs {
   duration: number;
@@ -12,6 +13,8 @@ export interface FindFreeSlotsArgs {
   timeWindow: string;
   preferredStartTime?: string;
   preferredEndTime?: string;
+  /** Earliest slot start = last meeting end on day + this many minutes */
+  bufferAfterLastMeetingMinutes?: number;
 }
 
 export interface FindFreeSlotsResult {
@@ -28,7 +31,74 @@ export interface FindFreeSlotsResult {
     blockers: Array<{ summary: string; display: string }>;
   };
   hint?: string;
+  earliestAllowedDisplay?: string;
   searchParams: SearchParams & { preferredStartTime?: string; preferredEndTime?: string };
+}
+
+async function clampSearchWindow(
+  bounds: { start: string; end: string },
+  args: FindFreeSlotsArgs,
+  timezone: string,
+  debug: DebugLogger,
+  now: Date
+): Promise<{ start: string; end: string; earliestAllowedDisplay?: string; bufferHint?: string }> {
+  let start = parseISO(bounds.start);
+  const end = parseISO(bounds.end);
+  let earliestAllowedDisplay: string | undefined;
+  let bufferHint: string | undefined;
+
+  const buffer = args.bufferAfterLastMeetingMinutes;
+  if (buffer !== undefined && buffer > 0) {
+    const dayStartIso = fromZonedTime(`${args.day}T00:00:00`, timezone).toISOString();
+    const dayEndIso = fromZonedTime(`${args.day}T23:59:59`, timezone).toISOString();
+    const events = await listEvents(dayStartIso, dayEndIso, undefined, debug);
+    let lastEndMs = 0;
+    for (const e of events) {
+      const endDt = e.end?.dateTime;
+      if (!endDt) continue;
+      const ms = parseISO(endDt).getTime();
+      if (ms > lastEndMs) lastEndMs = ms;
+    }
+    if (lastEndMs > 0) {
+      const earliest = addMinutes(new Date(lastEndMs), buffer);
+      if (earliest > start) {
+        start = earliest;
+        earliestAllowedDisplay = formatTimeSlot(
+          { start: earliest.toISOString(), end: addMinutes(earliest, 30).toISOString() },
+          timezone
+        );
+        bufferHint = `Earliest start after last meeting + ${buffer} min buffer: ${earliestAllowedDisplay}. Do not ask the user when their last meeting ends.`;
+      }
+    }
+  }
+
+  const preferredInput = args.preferredStartTime ?? args.preferredEndTime;
+  if (preferredInput) {
+    const timeStr =
+      args.preferredStartTime && args.preferredEndTime
+        ? `${args.preferredStartTime} to ${args.preferredEndTime}`
+        : preferredInput;
+    const parsed = parsePreferredTime(timeStr, args.day, timezone);
+    if (parsed && parseISO(parsed.start) > start) {
+      start = parseISO(parsed.start);
+    }
+  }
+
+  if (start >= end) {
+    return {
+      start: bounds.start,
+      end: bounds.end,
+      earliestAllowedDisplay,
+      bufferHint: bufferHint ?? 'No room in window after buffer and preferred time.',
+    };
+  }
+
+  return {
+    start: start.toISOString(),
+    end: end.toISOString(),
+    earliestAllowedDisplay,
+    bufferHint,
+  };
 }
 
 export async function executeFindFreeSlots(
@@ -39,7 +109,11 @@ export async function executeFindFreeSlots(
   now: Date = new Date()
 ): Promise<FindFreeSlotsResult> {
   const { duration, day, timeWindow, preferredStartTime, preferredEndTime } = args;
-  const bounds = getTimeWindowBounds(day, timeWindow, timezone, now, workingHours);
+  const rawBounds = getTimeWindowBounds(day, timeWindow, timezone, now, workingHours);
+  const clamped = await clampSearchWindow(rawBounds, args, timezone, debug, now);
+  const bounds = { start: clamped.start, end: clamped.end };
+  const bufferHint = clamped.bufferHint;
+  const earliestAllowedDisplay = clamped.earliestAllowedDisplay;
 
   let conflictStrategy: string | null = null;
   let conflictMessage: string | null = null;
@@ -112,9 +186,14 @@ export async function executeFindFreeSlots(
         }));
     }
 
-    hint = available
-      ? `User asked for ${requestedSlot.display}. That time is available — confirm before booking.`
-      : `User asked for ${requestedSlot.display}. It is NOT available. Lead with blockers: ${requestedSlot.blockers.map(b => b.summary).join(', ') || 'existing meeting'}. Then offer nearest alternatives in order.`;
+    hint = [
+      bufferHint,
+      available
+        ? `User asked for ${requestedSlot.display}. That time is available — confirm before booking.`
+        : `User asked for ${requestedSlot.display}. It is NOT available. Lead with blockers: ${requestedSlot.blockers.map(b => b.summary).join(', ') || 'existing meeting'}. Then offer nearest alternatives in order.`,
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     return {
       slots: ranked,
@@ -133,6 +212,7 @@ export async function executeFindFreeSlots(
         : undefined,
       requestedSlot,
       hint,
+      earliestAllowedDisplay,
       searchParams: { duration, day, timeWindow, preferredStartTime, preferredEndTime },
     };
   }
@@ -169,6 +249,10 @@ export async function executeFindFreeSlots(
     conflictMessage = conflict.message;
   }
 
+  const generalHint = bufferHint
+    ? bufferHint
+    : undefined;
+
   return {
     slots,
     slotsFound: slots.length,
@@ -176,7 +260,8 @@ export async function executeFindFreeSlots(
     conflictMessage,
     blockingEvents: blockingEvents.length > 0 ? blockingEvents : undefined,
     requestedSlot,
-    hint,
+    hint: generalHint,
+    earliestAllowedDisplay,
     searchParams: { duration, day, timeWindow, preferredStartTime, preferredEndTime },
   };
 }

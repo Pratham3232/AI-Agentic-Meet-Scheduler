@@ -80,7 +80,16 @@ export function upsertBookingProgressMessage(
 
   if (progressIdx >= 0) {
     const updated = [...stripped];
-    updated[progressIdx] = progressMsg;
+    const existing = stripped[progressIdx];
+    const preserved =
+      Boolean(existing.content?.trim()) &&
+      !existing.content.startsWith('Booking in progress') &&
+      !existing.content.startsWith('Booking complete');
+    updated[progressIdx] = {
+      ...existing,
+      content: preserved ? existing.content : content,
+      bookingProgress: snap,
+    };
     return updated;
   }
   return [...stripped, progressMsg];
