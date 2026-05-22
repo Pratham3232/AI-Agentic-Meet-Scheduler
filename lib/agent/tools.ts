@@ -110,6 +110,45 @@ export const TOOL_SCHEMAS: ChatCompletionTool[] = [
   {
     type: 'function' as const,
     function: {
+      name: 'init_cancel_job',
+      description:
+        'Initialize bulk cancellation after user confirms. Pass eventIds from list_events cache (or omit to cancel all from last list). Do NOT call delete_event per event.',
+      parameters: {
+        type: 'object',
+        properties: {
+          eventIds: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Google Calendar event IDs to cancel',
+          },
+          force: {
+            type: 'boolean',
+            description: 'Set true only if user explicitly asks to restart a completed cancel job',
+          },
+        },
+        required: ['eventIds'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'execute_cancel_batch',
+      description:
+        'Cancel the next batch from the active cancel job (default 5). Call once after init_cancel_job; client SSE continues the rest.',
+      parameters: {
+        type: 'object',
+        properties: {
+          batchSize: { type: 'number', description: 'Items to cancel this call (default 5)' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    function: {
       name: 'execute_booking_batch',
       description:
         'Book the next batch of pending items from the active booking job (default 5). Call once after init_booking_job; the client auto-continues via SSE for the rest.',

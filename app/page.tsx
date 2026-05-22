@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import ChatWindow from '@/components/ChatWindow';
-import type { BookingProgressSnapshot } from '@/types';
+import type { BookingProgressSnapshot, CancelProgressSnapshot } from '@/types';
 import {
   bookingProgressContent,
   shouldApplyBookingProgress,
@@ -11,14 +11,30 @@ import {
   isNewBookingJob,
 } from '@/lib/client/booking-progress-ui';
 import {
+  cancelProgressContent,
+  shouldApplyCancelProgress,
+  upsertCancelProgressMessage,
+  isNewCancelJob,
+} from '@/lib/client/cancel-progress-ui';
+import { RealtimeResponseGate } from '@/lib/client/realtime-response-gate';
+import {
   CONFLICT_HANDLING_RULES,
   PROXIMITY_SLOT_RULES,
   WORKING_HOURS_POLICY,
   MULTI_DAY_BOOKING_RULES,
   MULTI_BOOKING_GAP_RULES,
   ASYNC_PROMISE_BAN,
+  BULK_CANCEL_RULES,
   RESCHEDULE_WORKFLOW_RULES,
 } from '@/lib/agent/prompt-shared';
+import {
+  buildBookingJobPromptBlockFromSnapshot,
+  bookingCompleteConversationHint,
+} from '@/lib/agent/booking-context';
+import {
+  buildCancelJobPromptBlockFromSnapshot,
+  cancelCompleteConversationHint,
+} from '@/lib/agent/cancel-context';
 
 type SlotOption = { display: string; start: string; end: string };
 type EventItem = { id: string; summary: string; display: string };
@@ -28,8 +44,21 @@ type Message = {
   slots?: SlotOption[];
   events?: EventItem[];
   bookingProgress?: BookingProgressSnapshot;
+  cancelProgress?: CancelProgressSnapshot;
 };
 type WorkingHours = { startHour: number; endHour: number };
+
+function capEventsForDisplay(events: EventItem[]): EventItem[] {
+  if (events.length <= 7) return events;
+  return [
+    ...events.slice(0, 5),
+    {
+      id: '_more',
+      summary: `…and ${events.length - 5} more`,
+      display: `${events.length} events total`,
+    },
+  ];
+}
 
 function loadWorkingHours(): WorkingHours {
   if (typeof window === 'undefined') return { startHour: 9, endHour: 17 };
@@ -55,6 +84,8 @@ export default function Home() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const latestProgressRef = useRef<BookingProgressSnapshot | null>(null);
+  const latestCancelProgressRef = useRef<CancelProgressSnapshot | null>(null);
+  const responseGateRef = useRef(new RealtimeResponseGate());
 
   useEffect(() => {
     localStorage.setItem('workingHours', JSON.stringify(workingHours));
@@ -87,14 +118,66 @@ export default function Home() {
   const pendingEventsRef       = useRef<EventItem[] | null>(null);
   const pendingBookingRef      = useRef<BookingProgressSnapshot | null>(null);
   const bookingRunActiveRef    = useRef(false);
+  const cancelRunActiveRef     = useRef(false);
+  const voiceInstructionsBaseRef = useRef('');
+  const lastBookingCompletePushedRef = useRef<string | null>(null);
+  const lastCancelCompletePushedRef = useRef<string | null>(null);
 
   const timezone = typeof window !== 'undefined'
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
     : 'UTC';
 
+  const pushVoiceBookingCompleteContext = useCallback(
+    async (snap: BookingProgressSnapshot, sid: string) => {
+      if (snap.pending > 0 && snap.status !== 'completed') return;
+      if (lastBookingCompletePushedRef.current === snap.jobId) return;
+      lastBookingCompletePushedRef.current = snap.jobId;
+
+      let confirmedSummary: string | null = null;
+      try {
+        const r = await fetch(
+          `/api/booking/progress?sessionId=${encodeURIComponent(sid)}`
+        );
+        const data = await r.json();
+        confirmedSummary = data.confirmedPlanSummary ?? null;
+      } catch {
+        /* ignore */
+      }
+
+      const dc = dcRef.current;
+      if (!dc || dc.readyState !== 'open') return;
+
+      const block = buildBookingJobPromptBlockFromSnapshot(snap, confirmedSummary);
+      const base = voiceInstructionsBaseRef.current;
+      if (base && block) {
+        dc.send(
+          JSON.stringify({
+            type: 'session.update',
+            session: { instructions: base + block },
+          })
+        );
+      }
+
+      dc.send(
+        JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: bookingCompleteConversationHint(snap) },
+            ],
+          },
+        })
+      );
+    },
+    []
+  );
+
   const runBookingJob = useCallback(async (sid: string) => {
     if (bookingRunActiveRef.current) return;
     bookingRunActiveRef.current = true;
+    let lastSnap: BookingProgressSnapshot | null = null;
     try {
       const res = await fetch('/api/booking/run', {
         method: 'POST',
@@ -133,6 +216,7 @@ export default function Home() {
               };
               if (!shouldApplyBookingProgress(latestProgressRef.current, snap)) continue;
               latestProgressRef.current = snap;
+              lastSnap = snap;
               setMessages(prev =>
                 upsertBookingProgressMessage(prev, snap) as Message[]
               );
@@ -142,12 +226,138 @@ export default function Home() {
           }
         }
       }
+
+      if (
+        lastSnap &&
+        (lastSnap.pending === 0 || lastSnap.status === 'completed') &&
+        dcRef.current?.readyState === 'open'
+      ) {
+        void pushVoiceBookingCompleteContext(lastSnap, sid);
+      }
     } catch (err) {
       console.error('[BookingRun]', err);
     } finally {
       bookingRunActiveRef.current = false;
     }
-  }, []);
+  }, [pushVoiceBookingCompleteContext]);
+
+  const pushVoiceCancelCompleteContext = useCallback(
+    async (snap: CancelProgressSnapshot, sid: string) => {
+      if (snap.pending > 0 && snap.status !== 'completed') return;
+      if (lastCancelCompletePushedRef.current === snap.jobId) return;
+      lastCancelCompletePushedRef.current = snap.jobId;
+
+      let confirmedSummary: string | null = null;
+      try {
+        const r = await fetch(
+          `/api/cancel/progress?sessionId=${encodeURIComponent(sid)}`
+        );
+        const data = await r.json();
+        confirmedSummary = data.confirmedCancelSummary ?? null;
+      } catch {
+        /* ignore */
+      }
+
+      const dc = dcRef.current;
+      if (!dc || dc.readyState !== 'open') return;
+
+      const block = buildCancelJobPromptBlockFromSnapshot(snap, confirmedSummary);
+      const base = voiceInstructionsBaseRef.current;
+      if (base && block) {
+        dc.send(
+          JSON.stringify({
+            type: 'session.update',
+            session: { instructions: base + block },
+          })
+        );
+      }
+
+      dc.send(
+        JSON.stringify({
+          type: 'conversation.item.create',
+          item: {
+            type: 'message',
+            role: 'user',
+            content: [
+              { type: 'input_text', text: cancelCompleteConversationHint(snap) },
+            ],
+          },
+        })
+      );
+    },
+    []
+  );
+
+  const runCancelJob = useCallback(async (sid: string) => {
+    if (cancelRunActiveRef.current) return;
+    cancelRunActiveRef.current = true;
+    let lastSnap: CancelProgressSnapshot | null = null;
+    try {
+      const res = await fetch('/api/cancel/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sid }),
+      });
+      if (!res.ok || !res.body) throw new Error('Cancel run failed');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(line.slice(6));
+            if (payload.type === 'progress' || payload.type === 'complete') {
+              if (payload.duplicateBlocked) continue;
+              const snap: CancelProgressSnapshot = {
+                jobId: payload.jobId ?? sid,
+                status:
+                  payload.status ??
+                  (payload.type === 'complete' ? 'completed' : 'in_progress'),
+                total: payload.total ?? 0,
+                cancelled: payload.cancelled ?? 0,
+                failed: payload.failed ?? 0,
+                pending: payload.pending ?? 0,
+                skipped: payload.skipped ?? 0,
+                percent: payload.percent ?? 0,
+                items: payload.items ?? [],
+              };
+              if (!shouldApplyCancelProgress(latestCancelProgressRef.current, snap)) {
+                continue;
+              }
+              latestCancelProgressRef.current = snap;
+              lastSnap = snap;
+              setMessages(prev =>
+                upsertCancelProgressMessage(prev, snap) as Message[]
+              );
+            }
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+
+      if (
+        lastSnap &&
+        (lastSnap.pending === 0 || lastSnap.status === 'completed') &&
+        dcRef.current?.readyState === 'open'
+      ) {
+        void pushVoiceCancelCompleteContext(lastSnap, sid);
+      }
+    } catch (err) {
+      console.error('[CancelRun]', err);
+    } finally {
+      cancelRunActiveRef.current = false;
+    }
+  }, [pushVoiceCancelCompleteContext]);
 
   // ── Text chat (existing pipeline) ─────────────────────────────────────────
   const sendTextMessage = useCallback(async (text: string) => {
@@ -187,10 +397,25 @@ export default function Home() {
             }) as Message[];
           }
         }
+        if (data.cancelJob) {
+          if (isNewCancelJob(latestCancelProgressRef.current, data.cancelJob)) {
+            latestCancelProgressRef.current = data.cancelJob;
+          } else if (shouldApplyCancelProgress(latestCancelProgressRef.current, data.cancelJob)) {
+            latestCancelProgressRef.current = data.cancelJob;
+          }
+          if (latestCancelProgressRef.current === data.cancelJob) {
+            next = upsertCancelProgressMessage(next, data.cancelJob, {
+              attachToLastAssistant: true,
+            }) as Message[];
+          }
+        }
         return next;
       });
       if (data.startBookingRun && sid) {
         await runBookingJob(sid);
+      }
+      if (data.startCancelRun && sid) {
+        await runCancelJob(sid);
       }
     } catch (err) {
       setMessages(prev => [...prev, {
@@ -200,7 +425,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading, sessionId, timezone, workingHours, runBookingJob]);
+  }, [isLoading, sessionId, timezone, workingHours, runBookingJob, runCancelJob]);
 
   // ── Handle tool calls from Realtime API ────────────────────────────────────
   const handleRealtimeToolCall = useCallback(async (callId: string, toolName: string, args: string) => {
@@ -223,7 +448,7 @@ export default function Home() {
       if ((toolName === 'find_free_slots' || toolName === 'find_next_slot') && data.result?.slots?.length) {
         pendingSlotsRef.current = data.result.slots;
       } else if (toolName === 'list_events' && data.result?.events?.length) {
-        pendingEventsRef.current = data.result.events;
+        pendingEventsRef.current = capEventsForDisplay(data.result.events);
       } else if (
         (toolName === 'init_booking_job' || toolName === 'execute_booking_batch') &&
         data.result?.progress
@@ -241,6 +466,52 @@ export default function Home() {
         if (data.result.startBookingRun && data.sessionId && !data.result.error) {
           void runBookingJob(data.sessionId);
         }
+        const sidDone = data.sessionId || sessionId;
+        if (
+          sidDone &&
+          data.result?.progress &&
+          (data.result.error === 'job_already_done' ||
+            data.result.done === true ||
+            (data.result.progress.pending === 0 && data.result.progress.booked > 0))
+        ) {
+          void pushVoiceBookingCompleteContext(
+            data.result.progress as BookingProgressSnapshot,
+            sidDone
+          );
+        }
+      } else if (
+        (toolName === 'init_cancel_job' || toolName === 'execute_cancel_batch') &&
+        data.result?.progress
+      ) {
+        const next = data.result.progress as CancelProgressSnapshot;
+        const blocked = data.result.error === 'job_already_done';
+        if (isNewCancelJob(latestCancelProgressRef.current, next)) {
+          latestCancelProgressRef.current = next;
+        } else if (shouldApplyCancelProgress(latestCancelProgressRef.current, next)) {
+          latestCancelProgressRef.current = next;
+        }
+        if (!blocked && latestCancelProgressRef.current === next) {
+          setMessages(prev =>
+            upsertCancelProgressMessage(prev, next) as Message[]
+          );
+        }
+        if (data.result.startCancelRun && data.sessionId && !data.result.error) {
+          void runCancelJob(data.sessionId);
+        }
+        const sidCancel = data.sessionId || sessionId;
+        if (
+          sidCancel &&
+          data.result?.progress &&
+          (data.result.error === 'job_already_done' ||
+            data.result.done === true ||
+            (data.result.progress.pending === 0 &&
+              data.result.progress.cancelled > 0))
+        ) {
+          void pushVoiceCancelCompleteContext(
+            data.result.progress as CancelProgressSnapshot,
+            sidCancel
+          );
+        }
       } else if (toolName === 'create_event' && data.result?.success === false) {
         setMessages(prev => [...prev, {
           role: 'assistant',
@@ -248,36 +519,24 @@ export default function Home() {
         }]);
       }
 
-      const dc = dcRef.current;
-      if (dc && dc.readyState === 'open') {
-        dc.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: {
-            type: 'function_call_output',
-            call_id: callId,
-            output: JSON.stringify(data.result),
-          },
-        }));
-        dc.send(JSON.stringify({ type: 'response.create' }));
-      }
+      responseGateRef.current.submitToolResult(callId, data.result);
     } catch (err) {
       console.error('[Realtime][Tool] Error:', err);
       pendingSlotsRef.current = null;
       pendingEventsRef.current = null;
-      const dc = dcRef.current;
-      if (dc && dc.readyState === 'open') {
-        dc.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: {
-            type: 'function_call_output',
-            call_id: callId,
-            output: JSON.stringify({ error: 'Tool execution failed' }),
-          },
-        }));
-        dc.send(JSON.stringify({ type: 'response.create' }));
-      }
+      responseGateRef.current.submitToolResult(callId, {
+        error: 'Tool execution failed',
+      });
     }
-  }, [sessionId, timezone, workingHours, runBookingJob]);
+  }, [
+    sessionId,
+    timezone,
+    workingHours,
+    runBookingJob,
+    runCancelJob,
+    pushVoiceBookingCompleteContext,
+    pushVoiceCancelCompleteContext,
+  ]);
 
   // ── Build session config for GA Realtime API ───────────────────────────────
   const buildSessionConfig = useCallback(() => {
@@ -296,9 +555,7 @@ export default function Home() {
     const dayAfterDate = dayAfter.toLocaleDateString('en-CA', { timeZone: timezone });
     const dayAfterDay  = dayAfter.toLocaleDateString('en-US', { weekday: 'long', timeZone: timezone });
 
-    return {
-      type: 'realtime',
-      instructions: `You are a warm, sharp voice scheduling assistant. You speak naturally, handle all calendar requests fluently, and never miss information the user already gave you.
+    const instructions = `You are a warm, sharp voice scheduling assistant. You speak naturally, handle all calendar requests fluently, and never miss information the user already gave you.
 
 ━━━ DATE REFERENCE (use these EXACT values — do NOT calculate dates yourself) ━━━
 Today: ${dayName}, ${today}
@@ -357,12 +614,18 @@ CHECK CALENDAR — "what's on my calendar", "what do I have", "my schedule", "sh
 CANCEL / DELETE — "cancel", "remove", "delete", "drop", "clear", etc.
   → Use lookup_event or list_events to find the event.
   → If EXACTLY ONE match: call delete_event IMMEDIATELY. Do NOT ask "are you sure?" — the user already said to cancel.
-  → If MULTIPLE matches: list them, ask which one, then delete immediately once picked.
-  → Report: "Done — I've cancelled [name] on [date/time]."
+  → If MULTIPLE and user wants ALL / cancel all listed: use init_cancel_job after ONE confirmation (count + range) — do NOT call delete_event one-by-one.
+  → If MULTIPLE and user picks ONE: delete_event for that ID only.
+
+${BULK_CANCEL_RULES}
+
+When you see [CANCEL_COMPLETE] in the conversation, cancellations are done — do not call delete_event again.
 
 ${RESCHEDULE_WORKFLOW_RULES}
 
 ${MULTI_DAY_BOOKING_RULES}
+
+When you see a [BOOKING_COMPLETE] message in the conversation, all listed meetings are already on the calendar — confirm success to the user; never call create_event or find_free_slots to re-book.
 
 ${MULTI_BOOKING_GAP_RULES}
 
@@ -403,7 +666,13 @@ ${PROXIMITY_SLOT_RULES}
 Speak naturally — short sentences, warm tone.
 For slot lists, name just the day and time (e.g. "Monday at 2 PM") — skip UTC strings.
 Never say "I'm unable to" or "I'm sorry, I can't". Redirect to what you CAN do.
-English only.`,
+English only.`;
+
+    voiceInstructionsBaseRef.current = instructions;
+
+    return {
+      type: 'realtime',
+      instructions,
       tools: [
         {
           type: 'function',
@@ -470,14 +739,49 @@ English only.`,
         },
         {
           type: 'function',
+          name: 'init_cancel_job',
+          description: 'Bulk cancel after user confirms. Pass eventIds from list_events; server expands from cache. Do NOT delete_event one-by-one.',
+          parameters: {
+            type: 'object',
+            properties: {
+              eventIds: { type: 'array', items: { type: 'string' } },
+              force: { type: 'boolean' },
+            },
+            required: ['eventIds'],
+          },
+        },
+        {
+          type: 'function',
+          name: 'execute_cancel_batch',
+          description: 'Cancel next batch from active cancel job. Client auto-continues via SSE.',
+          parameters: {
+            type: 'object',
+            properties: { batchSize: { type: 'number' } },
+          },
+        },
+        {
+          type: 'function',
           name: 'plan_multi_day_bookings',
-          description: 'Plan same-time bookings across multiple days. Returns autoBookable vs conflict days (one alternative per conflict).',
+          description: 'Plan same-time bookings across multiple days. Returns autoBookable vs conflict days (one alternative per conflict). Use dayPattern for "every weekday next month" / "first week of June" instead of enumerating all dates manually.',
           parameters: {
             type: 'object',
             properties: {
               durationMinutes: { type: 'number' },
-              days: { type: 'array', items: { type: 'string' } },
-              preferredTime: { type: 'string', description: 'Local time each day e.g. "10 AM"' },
+              days: { type: 'array', items: { type: 'string' }, description: 'ISO dates YYYY-MM-DD (may be empty when dayPattern is used)' },
+              preferredTime: { type: 'string', description: 'Local time each day e.g. "10 AM" or "5:00"' },
+              dayPattern: {
+                type: 'object',
+                description: 'Server-side day resolver — preferred over enumerating dates manually for monthly/weekly patterns',
+                properties: {
+                  monthOffset: { type: 'number', description: '0=this month, 1=next month' },
+                  weekdaysOnly: { type: 'boolean', description: 'true = Mon–Fri only within the resolved month' },
+                  week: { type: 'string', enum: ['first', 'last'], description: 'first or last week of month only' },
+                  month: { type: 'number', description: 'Target month 1–12 (e.g. 6 for June)' },
+                  year: { type: 'number', description: 'Target year; omit to use current year' },
+                },
+              },
+              userMessage: { type: 'string', description: 'Original user phrasing for server day resolution, e.g. "every weekday next month"' },
+              summary: { type: 'string', description: 'Event title for all days, e.g. "Standup" or "Yoga"' },
             },
             required: ['durationMinutes', 'days', 'preferredTime'],
           },
@@ -756,18 +1060,29 @@ English only.`,
         break;
       }
 
-      // Response complete
-      case 'response.done': {
-        console.log('[Realtime] Response done');
-        setIsSpeaking(false);
-        assistantTranscriptRef.current = '';
-        assistantMsgIndexRef.current = -1;
+      case 'response.created': {
+        const rid = event.response?.id ?? event.id;
+        if (rid) responseGateRef.current.onResponseCreated(rid);
+        break;
+      }
+
+      case 'response.done':
+      case 'response.failed':
+      case 'response.cancelled': {
+        if (event.type === 'response.done') {
+          console.log('[Realtime] Response done');
+          setIsSpeaking(false);
+          assistantTranscriptRef.current = '';
+          assistantMsgIndexRef.current = -1;
+        }
+        responseGateRef.current.onResponseEnded();
         break;
       }
 
       // Function call complete — execute tool
       case 'response.function_call_arguments.done': {
         console.log('[Realtime][FnCall]', event.name, event.arguments?.slice(0, 100));
+        responseGateRef.current.registerFunctionCall(event.call_id);
         handleRealtimeToolCall(event.call_id, event.name, event.arguments);
         break;
       }
@@ -825,6 +1140,10 @@ English only.`,
 
       dc.onopen = () => {
         console.log('[Realtime] DataChannel open — sending session.update');
+        responseGateRef.current.setSendFn(payload => {
+          if (dc.readyState === 'open') dc.send(payload);
+        });
+        responseGateRef.current.reset();
         const config = buildSessionConfig();
         console.log('[Realtime] Session config:', JSON.stringify(config).slice(0, 300));
         dc.send(JSON.stringify({
@@ -908,6 +1227,11 @@ English only.`,
     pendingEventsRef.current = null;
     pendingBookingRef.current = null;
     latestProgressRef.current = null;
+    latestCancelProgressRef.current = null;
+    lastBookingCompletePushedRef.current = null;
+    lastCancelCompletePushedRef.current = null;
+    responseGateRef.current.reset();
+    responseGateRef.current.setSendFn(null);
   }, []);
 
   const toggleVoice = useCallback(() => {
@@ -935,7 +1259,7 @@ English only.`,
           content: [{ type: 'input_text', text: confirmText }],
         },
       }));
-      dcRef.current.send(JSON.stringify({ type: 'response.create' }));
+      responseGateRef.current.requestResponse();
     } else {
       sendTextMessage(confirmText);
     }

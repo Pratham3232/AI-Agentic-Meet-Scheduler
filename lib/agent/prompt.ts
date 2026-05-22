@@ -8,13 +8,16 @@ import {
   MULTI_DAY_BOOKING_RULES,
   MULTI_BOOKING_GAP_RULES,
   ASYNC_PROMISE_BAN,
+  BULK_CANCEL_RULES,
   RESCHEDULE_WORKFLOW_RULES,
 } from './prompt-shared';
+import { buildCancelJobPromptBlock } from './cancel-context';
 import {
   buildCachedCalendarPromptBlock,
   buildPendingRescheduleBlock,
   buildLastRescheduledBlock,
 } from './event-cache';
+import { buildBookingJobPromptBlock } from './booking-context';
 
 function buildConversationContext(state: ConversationState): string {
   const history = state.conversationHistory;
@@ -142,10 +145,12 @@ When the user asks to cancel or delete a meeting:
   - Use lookup_event or list_events to find the event by name, time, or description.
   - If EXACTLY ONE match is found, call delete_event IMMEDIATELY — do NOT ask for confirmation.
     Then tell the user it's done: "Done — I've cancelled [event name] on [date/time]."
-  - If MULTIPLE matches are found, list them and ask which one to cancel. Once the user picks,
-    delete it immediately without a second confirmation.
+  - If MULTIPLE matches and user wants ALL / cancel all listed → ${BULK_CANCEL_RULES}
+  - If MULTIPLE matches and user picks ONE → delete_event for that ID only.
   - If NO match is found, tell the user and ask for a more specific name or date range.
-  - NEVER say "Are you sure?" or "Shall I go ahead?" — the user already told you to cancel it.
+  - NEVER say "Are you sure?" or "Shall I go ahead?" for a single clear cancel — the user already said to cancel.
+
+${BULK_CANCEL_RULES}
 
 ${RESCHEDULE_WORKFLOW_RULES}
 
@@ -174,7 +179,8 @@ ${missingSlots.length > 0 ? `Still needed: ${missingSlots.join(', ')}` : 'All sl
 Awaiting confirmation: ${state.awaitingConfirmation}
 ${resultsBlock}
 ${state.bookingPlanConfirmed && state.confirmedPlanSummary ? `\n## Confirmed booking plan (do not re-ask)\n${state.confirmedPlanSummary}` : ''}
-${state.bookingJob?.status === 'completed' ? '\n## Booking job COMPLETE — do not call init_booking_job or execute_booking_batch again.' : ''}
+${buildBookingJobPromptBlock(state)}
+${buildCancelJobPromptBlock(state)}
 ${buildCachedCalendarPromptBlock(state)}
 ${buildPendingRescheduleBlock(state)}
 ${buildLastRescheduledBlock(state)}

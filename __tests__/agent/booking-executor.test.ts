@@ -6,12 +6,13 @@ import {
   type InitBookingJobResult,
   type BookingJobEntryInput,
 } from '@/lib/agent/booking-executor';
-import { createEvent, listEvents } from '@/lib/calendar/events';
+import { createEvent, listEvents, listEventsPaginated } from '@/lib/calendar/events';
 import { isSlotFree } from '@/lib/calendar/slot-search';
 
 jest.mock('@/lib/calendar/events', () => ({
   createEvent: jest.fn(),
   listEvents: jest.fn(),
+  listEventsPaginated: jest.fn(),
 }));
 
 jest.mock('@/lib/calendar/slot-search', () => ({
@@ -21,6 +22,7 @@ jest.mock('@/lib/calendar/slot-search', () => ({
 
 const mockedCreate = createEvent as jest.MockedFunction<typeof createEvent>;
 const mockedList = listEvents as jest.MockedFunction<typeof listEvents>;
+const mockedListPaginated = listEventsPaginated as jest.MockedFunction<typeof listEventsPaginated>;
 const mockedFree = isSlotFree as jest.MockedFunction<typeof isSlotFree>;
 
 async function mustInit(entries: BookingJobEntryInput[]): Promise<InitBookingJobResult> {
@@ -33,6 +35,7 @@ describe('booking-executor', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockedList.mockResolvedValue([]);
+    mockedListPaginated.mockResolvedValue([]);
     mockedFree.mockResolvedValue(true);
     mockedCreate.mockImplementation(async (summary, start, end) => ({
       id: `evt-${start}`,
@@ -79,16 +82,16 @@ describe('booking-executor', () => {
 
   test('reconciles existing calendar event instead of failing', async () => {
     mockedFree.mockResolvedValue(false);
-    mockedList
-      .mockResolvedValueOnce([])
-      .mockResolvedValue([
-        {
-          id: 'existing-1',
-          summary: 'Break',
-          start: { dateTime: '2026-05-20T14:00:00Z' },
-          end: { dateTime: '2026-05-20T15:00:00Z' },
-        },
-      ] as any);
+    // listEventsPaginated (used by entriesAlreadyOnCalendar) returns empty → init proceeds
+    // listEvents (used by executeBookingBatch pre-batch check) returns the existing event
+    mockedList.mockResolvedValue([
+      {
+        id: 'existing-1',
+        summary: 'Break',
+        start: { dateTime: '2026-05-20T14:00:00Z' },
+        end: { dateTime: '2026-05-20T15:00:00Z' },
+      },
+    ] as any);
 
     const { job } = await mustInit([
       { day: '2026-05-20', start: '2026-05-20T14:00:00Z', end: '2026-05-20T15:00:00Z', summary: 'Break' },
@@ -114,7 +117,7 @@ describe('booking-executor', () => {
   });
 
   test('blocks re-init when calendar already has events (different fingerprint)', async () => {
-    mockedList.mockResolvedValue([
+    mockedListPaginated.mockResolvedValue([
       {
         id: 'e1',
         summary: 'Break',

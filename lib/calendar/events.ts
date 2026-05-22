@@ -86,6 +86,42 @@ export async function listEvents(
   return items;
 }
 
+/** List all events in range, following nextPageToken (no silent 50-cap). */
+export async function listEventsPaginated(
+  timeMin: string,
+  timeMax: string,
+  calendarId: string = process.env.GOOGLE_CALENDAR_ID || 'primary',
+  debug?: DebugLogger,
+  pageSize: number = 250
+): Promise<CalendarEvent[]> {
+  const t0 = Date.now();
+  const calendar = await getCalendarClient();
+  const all: CalendarEvent[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const response = await calendar.events.list({
+      calendarId,
+      timeMin,
+      timeMax,
+      singleEvents: true,
+      orderBy: 'startTime',
+      maxResults: pageSize,
+      pageToken,
+    });
+    all.push(...((response.data.items || []) as CalendarEvent[]));
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  debug?.log({
+    type: 'tool_result',
+    tool: 'list_events',
+    summary: `${all.length} event(s) found (paginated)`,
+  });
+  console.log(`[PERF][calendar] listEventsPaginated: ${Date.now() - t0}ms (${all.length})`);
+  return all;
+}
+
 export async function patchEvent(
   eventId: string,
   startTime: string,

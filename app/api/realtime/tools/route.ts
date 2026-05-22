@@ -6,7 +6,19 @@ import {
   executeBookingBatch,
   getBookingProgress,
 } from '@/lib/agent/booking-executor';
-import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
+import {
+  initCancelJob,
+  executeCancelBatch,
+  getCancelProgress,
+  setLastBulkCancelTarget,
+} from '@/lib/agent/cancel-executor';
+import { tryReconcileCreateEventWithBookingJob } from '@/lib/agent/booking-context';
+import {
+  createEvent,
+  deleteEvent,
+  lookupEvent,
+  listEventsPaginated,
+} from '@/lib/calendar/events';
 import { getTimeWindowBounds, formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
@@ -270,6 +282,70 @@ export async function POST(req: NextRequest) {
         };
       }
 
+    } else if (toolName === 'init_cancel_job') {
+      const { eventIds, force } = args;
+      const initResult = await initCancelJob(
+        eventIds ?? [],
+        state,
+        timezone,
+        state.cancelJob,
+        force
+      );
+      if ('error' in initResult) {
+        result = {
+          error: initResult.error,
+          message: initResult.message,
+          progress: initResult.progress,
+          hint: 'Cancellation already completed.',
+          startCancelRun: false,
+        };
+      } else {
+        const { job, jobId, total, hint } = initResult;
+        state.cancelJob = job;
+        state.cancelPlanConfirmed = true;
+        state.confirmedCancelSummary =
+          state.lastBulkCancelTarget?.summary ?? `${total} event(s)`;
+        state.awaitingConfirmation = false;
+        const progress = getCancelProgress(job);
+        result = {
+          jobId,
+          total,
+          progress,
+          hint,
+          startCancelRun: progress.pending > 0,
+        };
+      }
+
+    } else if (toolName === 'execute_cancel_batch') {
+      if (!state.cancelJob) {
+        result = { error: 'No active cancel job. Call init_cancel_job first.' };
+      } else if (
+        state.cancelJob.status === 'completed' ||
+        (getCancelProgress(state.cancelJob).cancelled > 0 &&
+          getCancelProgress(state.cancelJob).pending === 0)
+      ) {
+        const progress = getCancelProgress(state.cancelJob);
+        result = {
+          error: 'job_already_done',
+          message: 'Cancel job already finished.',
+          progress,
+          done: true,
+          startCancelRun: false,
+        };
+      } else {
+        const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;
+        const batchResult = await executeCancelBatch(state.cancelJob, batchSize, debug);
+        state.cancelJob = batchResult.job;
+        result = {
+          progress: batchResult.progress,
+          cancelledThisBatch: batchResult.cancelledThisBatch,
+          failedThisBatch: batchResult.failedThisBatch,
+          done: batchResult.done,
+          hint: batchResult.hint,
+          startCancelRun: !batchResult.done && batchResult.progress.pending > 0,
+        };
+      }
+
     } else if (toolName === 'identify_event') {
       const { timeMin, timeMax, timeHint, summaryHint, day } = args;
       const identified = await runIdentifyEvent(
@@ -300,6 +376,15 @@ export async function POST(req: NextRequest) {
     } else if (toolName === 'create_event') {
       const { summary, startTime, endTime, attendees = [], description } = args;
 
+      const reconciled = tryReconcileCreateEventWithBookingJob(
+        state,
+        startTime,
+        endTime,
+        summary
+      );
+      if (reconciled) {
+        result = reconciled;
+      } else {
       const eventStart = new Date(startTime);
       if (eventStart < now) {
         result = {
@@ -311,11 +396,21 @@ export async function POST(req: NextRequest) {
       } else {
         const free = await isSlotFree(startTime, endTime);
         if (!free) {
+          const conflictReconcile = tryReconcileCreateEventWithBookingJob(
+            state,
+            startTime,
+            endTime,
+            summary
+          );
+          if (conflictReconcile) {
+            result = conflictReconcile;
+          } else {
           result = {
             success: false,
             error: 'That time conflicts with an existing event.',
             hint: 'Call find_free_slots with preferredStartTime for nearest alternatives.',
           };
+          }
         } else {
           const event = await createEvent(summary, startTime, endTime, attendees, description);
           const invalidated = invalidateEventCache(state);
@@ -335,12 +430,20 @@ export async function POST(req: NextRequest) {
           };
         }
       }
+      }
 
     } else if (toolName === 'list_events') {
       const { timeMin, timeMax } = args;
-      const events = await listEvents(timeMin, timeMax, undefined, debug, 50);
+      const events = await listEventsPaginated(timeMin, timeMax, undefined, debug);
       const cached = updateEventCache(state, timeMin, timeMax, events, timezone);
-      state.cachedCalendar = cached.cachedCalendar;
+      const withTarget = setLastBulkCancelTarget(
+        cached,
+        timeMin,
+        timeMax,
+        cached.cachedCalendar!.events
+      );
+      state.cachedCalendar = withTarget.cachedCalendar;
+      state.lastBulkCancelTarget = withTarget.lastBulkCancelTarget;
       result = {
         count: events.length,
         events: events.map(e => ({
@@ -352,6 +455,10 @@ export async function POST(req: NextRequest) {
             ? formatTimeSlot({ start: e.start.dateTime, end: e.end.dateTime }, timezone)
             : 'All day',
         })),
+        hint:
+          events.length > 7
+            ? `${events.length} events. For bulk cancel use init_cancel_job after one confirmation — do not list every title.`
+            : undefined,
       };
 
     } else if (toolName === 'lookup_event') {

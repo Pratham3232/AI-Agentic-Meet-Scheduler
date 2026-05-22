@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session/store';
-import { getBookingProgress } from '@/lib/agent/booking-executor';
+import { getCancelProgress } from '@/lib/agent/cancel-executor';
 
 export async function GET(req: NextRequest) {
   const sessionId = req.nextUrl.searchParams.get('sessionId');
@@ -9,13 +9,12 @@ export async function GET(req: NextRequest) {
   }
 
   const state = await getSession(sessionId);
-  if (!state?.bookingJob) {
+  if (!state?.cancelJob) {
     return NextResponse.json({ progress: null });
   }
 
   return NextResponse.json({
-    progress: getBookingProgress(state.bookingJob),
-    confirmedPlanSummary: state.confirmedPlanSummary ?? null,
-    bookingPlanConfirmed: state.bookingPlanConfirmed ?? false,
+    progress: getCancelProgress(state.cancelJob),
+    confirmedCancelSummary: state.confirmedCancelSummary ?? null,
   });
 }

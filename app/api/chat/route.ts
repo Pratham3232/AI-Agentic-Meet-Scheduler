@@ -18,9 +18,21 @@ import {
   executeBookingBatch,
   getBookingProgress,
 } from '@/lib/agent/booking-executor';
+import {
+  initCancelJob,
+  executeCancelBatch,
+  getCancelProgress,
+  setLastBulkCancelTarget,
+} from '@/lib/agent/cancel-executor';
+import { tryReconcileCreateEventWithBookingJob } from '@/lib/agent/booking-context';
 import { runIdentifyEvent, runRescheduleEvent } from '@/lib/agent/event-matcher';
 import { invalidateEventCache, updateEventCache } from '@/lib/agent/event-cache';
-import { createEvent, deleteEvent, lookupEvent, listEvents } from '@/lib/calendar/events';
+import {
+  createEvent,
+  deleteEvent,
+  lookupEvent,
+  listEventsPaginated,
+} from '@/lib/calendar/events';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { executeFindFreeSlots } from '@/lib/agent/find-slots';
 import { planMultiDayBookings } from '@/lib/agent/multi-booking';
@@ -34,7 +46,12 @@ import {
 import { isSlotFree } from '@/lib/calendar/slot-search';
 import { DebugLogger } from '@/lib/debug';
 import { generateVoiceScript } from '@/lib/voice-script';
-import { BookingProgressSnapshot, ConversationState, WorkingHours } from '@/types';
+import {
+  BookingProgressSnapshot,
+  CancelProgressSnapshot,
+  ConversationState,
+  WorkingHours,
+} from '@/types';
 import { withCalendarAuth } from '@/lib/calendar/auth';
 import { resolveCalendarAuth } from '@/lib/auth/resolve';
 
@@ -313,6 +330,102 @@ async function executeTool(
     };
   }
 
+  // ── init_cancel_job ───────────────────────────────────────────────────────
+  if (toolName === 'init_cancel_job') {
+    const { eventIds, force, summary } = args as {
+      eventIds: string[];
+      force?: boolean;
+      summary?: string;
+    };
+
+    const initResult = await initCancelJob(
+      eventIds ?? [],
+      state,
+      timezone,
+      state.cancelJob,
+      force
+    );
+
+    if ('error' in initResult) {
+      return {
+        toolResult: {
+          error: initResult.error,
+          message: initResult.message,
+          progress: initResult.progress,
+          hint: 'Cancellation already completed. Do not re-initialize.',
+          startCancelRun: false,
+        },
+        stateUpdates: {},
+      };
+    }
+
+    const { job, jobId, total, hint } = initResult;
+    const progress = getCancelProgress(job);
+    const cancelSummary =
+      state.lastBulkCancelTarget?.summary ??
+      `${total} event(s)${summary ? ` — ${summary}` : ''}`;
+
+    return {
+      toolResult: {
+        jobId,
+        total,
+        progress,
+        hint,
+        startCancelRun: progress.pending > 0,
+      },
+      stateUpdates: {
+        cancelJob: job,
+        cancelPlanConfirmed: true,
+        confirmedCancelSummary: cancelSummary,
+        awaitingConfirmation: false,
+      },
+    };
+  }
+
+  // ── execute_cancel_batch ──────────────────────────────────────────────────
+  if (toolName === 'execute_cancel_batch') {
+    if (!state.cancelJob) {
+      return {
+        toolResult: {
+          error: 'No active cancel job. Call init_cancel_job first.',
+        },
+        stateUpdates: {},
+      };
+    }
+
+    const existingProgress = getCancelProgress(state.cancelJob);
+    if (
+      state.cancelJob.status === 'completed' ||
+      (existingProgress.cancelled > 0 && existingProgress.pending === 0)
+    ) {
+      return {
+        toolResult: {
+          error: 'job_already_done',
+          message: 'Cancel job already finished.',
+          progress: existingProgress,
+          done: true,
+          startCancelRun: false,
+        },
+        stateUpdates: {},
+      };
+    }
+
+    const batchSize = typeof args.batchSize === 'number' ? args.batchSize : 5;
+    const result = await executeCancelBatch(state.cancelJob, batchSize, debug);
+
+    return {
+      toolResult: {
+        progress: result.progress,
+        cancelledThisBatch: result.cancelledThisBatch,
+        failedThisBatch: result.failedThisBatch,
+        done: result.done,
+        hint: result.hint,
+        startCancelRun: !result.done && result.progress.pending > 0,
+      },
+      stateUpdates: { cancelJob: result.job },
+    };
+  }
+
   // ── identify_event ────────────────────────────────────────────────────────
   if (toolName === 'identify_event') {
     const { timeMin, timeMax, timeHint, summaryHint, day } = args as {
@@ -365,8 +478,31 @@ async function executeTool(
       description?: string;
     };
 
+    const reconciled = tryReconcileCreateEventWithBookingJob(
+      state,
+      startTime,
+      endTime,
+      summary
+    );
+    if (reconciled) {
+      console.log(`[PERF][chat] executeTool create_event (already booked): ${Date.now() - tExec}ms`);
+      return {
+        toolResult: reconciled,
+        stateUpdates: {},
+      };
+    }
+
     const free = await isSlotFree(startTime, endTime);
     if (!free) {
+      const conflictReconcile = tryReconcileCreateEventWithBookingJob(
+        state,
+        startTime,
+        endTime,
+        summary
+      );
+      if (conflictReconcile) {
+        return { toolResult: conflictReconcile, stateUpdates: {} };
+      }
       return {
         toolResult: {
           success: false,
@@ -405,7 +541,7 @@ async function executeTool(
   // ── list_events ───────────────────────────────────────────────────────────
   if (toolName === 'list_events') {
     const { timeMin, timeMax } = args as { timeMin: string; timeMax: string };
-    const events = await listEvents(timeMin, timeMax, undefined, debug);
+    const events = await listEventsPaginated(timeMin, timeMax, undefined, debug);
 
     debug.log({
       type: 'tool_result',
@@ -428,12 +564,20 @@ async function executeTool(
     };
 
     const cached = updateEventCache(state, timeMin, timeMax, events, timezone);
+    const withTarget = setLastBulkCancelTarget(cached, timeMin, timeMax, cached.cachedCalendar!.events);
     console.log(`[PERF][chat] executeTool list_events: ${Date.now() - tExec}ms`);
     return {
-      toolResult,
+      toolResult: {
+        ...toolResult,
+        hint:
+          events.length > 7
+            ? `${events.length} events found. For bulk cancel, confirm count with user then init_cancel_job — do not list every title.`
+            : undefined,
+      },
       stateUpdates: {
-        cachedCalendar: cached.cachedCalendar,
+        cachedCalendar: withTarget.cachedCalendar,
         calendarVersion: state.calendarVersion,
+        lastBulkCancelTarget: withTarget.lastBulkCancelTarget,
       },
     };
   }
@@ -559,8 +703,11 @@ export async function POST(req: NextRequest) {
     let finalText = '';
     let lastListedEvents: Array<{ id: string; summary: string; display: string }> | null = null;
     let bookingProgress: BookingProgressSnapshot | undefined;
+    let cancelProgress: CancelProgressSnapshot | undefined;
     let startBookingRun = false;
+    let startCancelRun = false;
     let batchFinishedJob = false;
+    let cancelBatchFinished = false;
     const tLoop = Date.now();
 
     while (loopCount < MAX_TOOL_LOOPS) {
@@ -632,8 +779,20 @@ export async function POST(req: NextRequest) {
           batchFinishedJob = Boolean(toolResult.done);
           startBookingRun = !batchFinishedJob && bookingProgress.pending > 0;
         }
+        if (toolName === 'init_cancel_job' && toolResult.progress && !toolResult.error) {
+          cancelProgress = toolResult.progress as CancelProgressSnapshot;
+          startCancelRun = cancelProgress.pending > 0;
+        }
+        if (toolName === 'execute_cancel_batch' && toolResult.progress) {
+          cancelProgress = toolResult.progress as CancelProgressSnapshot;
+          cancelBatchFinished = Boolean(toolResult.done);
+          startCancelRun = !cancelBatchFinished && cancelProgress.pending > 0;
+        }
         if (state.bookingJob && !bookingProgress) {
           bookingProgress = getBookingProgress(state.bookingJob);
+        }
+        if (state.cancelJob && !cancelProgress) {
+          cancelProgress = getCancelProgress(state.cancelJob);
         }
 
         chatMessages.push({
@@ -681,6 +840,12 @@ export async function POST(req: NextRequest) {
         startBookingRun = false;
       }
     }
+    if (state.cancelJob) {
+      cancelProgress = getCancelProgress(state.cancelJob);
+      if (cancelBatchFinished || cancelProgress.pending === 0) {
+        startCancelRun = false;
+      }
+    }
 
     console.log(`[PERF][chat] total request: ${Date.now() - t0}ms`);
     return NextResponse.json({
@@ -690,7 +855,9 @@ export async function POST(req: NextRequest) {
       slots: formattedSlots,
       events: lastListedEvents || undefined,
       bookingJob: bookingProgress,
+      cancelJob: cancelProgress,
       startBookingRun: startBookingRun || undefined,
+      startCancelRun: startCancelRun || undefined,
       state: {
         slots: state.slots,
         hasAllSlots: hasAllRequiredSlots(state),

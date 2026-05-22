@@ -6,14 +6,12 @@ import type { BookingJobItem } from '@/types';
 export type RailDensity = 'sm' | 'md' | 'lg';
 
 export function sortBookingItems(items: BookingJobItem[]): BookingJobItem[] {
-  return [...items].sort((a, b) => a.day.localeCompare(b.day));
+  return [...items].sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
 }
 
 export function getProcessedPercent(items: BookingJobItem[]): number {
   if (items.length === 0) return 100;
-  const processed = items.filter(
-    i => i.status === 'booked' || i.status === 'failed' || i.status === 'skipped'
-  ).length;
+  const processed = items.filter(i => i.status !== 'pending').length;
   return Math.round((processed / items.length) * 100);
 }
 
@@ -24,15 +22,11 @@ export function getRailDensity(count: number): RailDensity {
 }
 
 function dotLabel(item: BookingJobItem): string {
-  const statusLabel =
-    item.status === 'booked'
-      ? 'booked'
-      : item.status === 'failed'
-        ? 'failed'
-        : item.status === 'skipped'
-          ? 'skipped'
-          : 'pending';
-  return `${item.display ?? `${item.day} · ${item.summary}`} — ${statusLabel}`;
+  return `${item.display ?? `${item.day || item.start} · ${item.summary}`} — ${item.status}`;
+}
+
+function sortKey(item: BookingJobItem): string {
+  return item.day || item.start || '';
 }
 
 interface BookingDayRailProps {

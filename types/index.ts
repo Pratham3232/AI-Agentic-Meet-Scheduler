@@ -45,6 +45,49 @@ export interface BookingProgressSnapshot {
   items: BookingJobItem[];
 }
 
+export type CancelItemStatus = 'pending' | 'cancelled' | 'failed' | 'skipped';
+
+export interface CancelJobItem {
+  eventId: string;
+  summary: string;
+  start: string;
+  end: string;
+  status: CancelItemStatus;
+  error?: string;
+  display?: string;
+}
+
+export type CancelJobStatus = 'idle' | 'in_progress' | 'completed' | 'failed';
+
+export interface CancelJob {
+  id: string;
+  status: CancelJobStatus;
+  items: CancelJobItem[];
+  updatedAt: string;
+  sseInProgress?: boolean;
+  eventIdsFingerprint?: string;
+}
+
+export interface CancelProgressSnapshot {
+  jobId: string;
+  status: CancelJobStatus;
+  total: number;
+  cancelled: number;
+  failed: number;
+  pending: number;
+  skipped: number;
+  percent: number;
+  items: CancelJobItem[];
+}
+
+export interface LastBulkCancelTarget {
+  timeMin: string;
+  timeMax: string;
+  eventIds: string[];
+  count: number;
+  summary: string;
+}
+
 export interface CachedCalendarSnapshot {
   timeMin: string;
   timeMax: string;
@@ -96,6 +139,10 @@ export interface LastMultiDayPlan {
 export interface ConversationState {
   sessionId: string;
   bookingJob: BookingJob | null;
+  cancelJob: CancelJob | null;
+  lastBulkCancelTarget: LastBulkCancelTarget | null;
+  cancelPlanConfirmed: boolean;
+  confirmedCancelSummary: string | null;
   lastMultiDayPlan: LastMultiDayPlan | null;
   bookingPlanConfirmed: boolean;
   confirmedPlanSummary: string | null;

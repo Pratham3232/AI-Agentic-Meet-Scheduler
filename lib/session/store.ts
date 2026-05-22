@@ -48,6 +48,10 @@ export function createInitialState(sessionId: string): ConversationState {
   return {
     sessionId,
     bookingJob: null,
+    cancelJob: null,
+    lastBulkCancelTarget: null,
+    cancelPlanConfirmed: false,
+    confirmedCancelSummary: null,
     lastMultiDayPlan: null,
     bookingPlanConfirmed: false,
     confirmedPlanSummary: null,

@@ -21,6 +21,10 @@ function baseState(): ConversationState {
   return {
     sessionId: 's1',
     bookingJob: null,
+    cancelJob: null,
+    lastBulkCancelTarget: null,
+    cancelPlanConfirmed: false,
+    confirmedCancelSummary: null,
     lastMultiDayPlan: null,
     bookingPlanConfirmed: false,
     confirmedPlanSummary: null,

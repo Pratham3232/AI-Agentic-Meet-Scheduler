@@ -50,8 +50,9 @@ export function updateEventCache(
 }
 
 export function shouldBypassEventCache(state: ConversationState): boolean {
+  // Bypass only while a reschedule is pending user confirmation.
+  // After completion, the cache is updated via upsertCachedEvent, so it stays valid.
   if (state.pendingReschedule) return true;
-  if (state.lastRescheduledEvent) return true;
   return false;
 }
 

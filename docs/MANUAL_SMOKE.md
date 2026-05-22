@@ -46,8 +46,28 @@ Run after changes to booking flow, progress UI, or session/SSE logic.
 2. Wait 10+ minutes or manually set old `updatedAt` on session job.
 3. Retry booking run; job should proceed (lock cleared).
 
+### 7. Bulk cancel (text)
+
+1. Send: `Cancel all my meetings this month` (or list range then `cancel all`).
+2. Confirm once with count only (not 34 lines in chat).
+3. Rail shows cancellation progress to 100%.
+4. Calendar events removed; assistant does not offer one-by-one delete.
+
+### 8. Bulk cancel (voice)
+
+1. Same as §7 in voice mode.
+2. No `Conversation already has an active response in progress` in chat errors.
+
+### 9. Voice response gate
+
+1. List week → `reschedule all yoga to 6am` → confirm.
+2. No duplicate `response.create` errors mid-flow.
+3. Optional: say `yes` while assistant is still speaking; no DC error.
+
 ## Pass criteria
 
 - No duplicate progress cards at 100%
 - Booked count on rail matches calendar events
 - No re-init loop after success (`job_already_done` only as message, not new 0% job)
+- Bulk cancel completes via rail without serial `delete_event` in voice
+- No Realtime `active response in progress` errors during multi-tool turns

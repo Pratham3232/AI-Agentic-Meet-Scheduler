@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { createEvent, listEvents } from '@/lib/calendar/events';
+import { createEvent, listEvents, listEventsPaginated } from '@/lib/calendar/events';
 import { isSlotFree, eventsOverlappingRange } from '@/lib/calendar/slot-search';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { entriesFingerprint } from '@/lib/agent/booking-days';
@@ -102,7 +102,7 @@ async function entriesAlreadyOnCalendar(entries: BookingJobEntryInput[]): Promis
     (max, e) => (e.end > max ? e.end : max),
     entries[0].end
   );
-  const calendarEvents = await listEvents(rangeStart, rangeEnd, undefined, undefined, 50);
+  const calendarEvents = await listEventsPaginated(rangeStart, rangeEnd);
   return entries.every(e => {
     const pseudo: BookingJobItem = {
       day: e.day,
@@ -233,7 +233,7 @@ export async function initBookingJob(
     hint:
       items.length === 0
         ? 'No entries to book.'
-        : 'Job initialized. The client will book remaining days via progress UI. Do not call init_booking_job again.',
+        : 'Job initialized. The client will book remaining days via progress UI. When progress reaches 100%, all meetings are on the calendar — do not call create_event or find_free_slots to retry. Do not call init_booking_job again.',
   };
 }
 

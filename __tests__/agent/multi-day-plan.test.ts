@@ -105,6 +105,10 @@ describe('multi-day-plan', () => {
   test('stateUpdatesForNewPlan clears stale in-progress job', () => {
     const state = {
       sessionId: 's1',
+      cancelJob: null,
+      lastBulkCancelTarget: null,
+      cancelPlanConfirmed: false,
+      confirmedCancelSummary: null,
       bookingJob: {
         id: 'j1',
         status: 'in_progress' as const,

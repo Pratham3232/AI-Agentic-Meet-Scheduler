@@ -28,12 +28,24 @@ For "every weekday next month", "daily at 5 AM", "Mon–Fri at 10", or "first we
   4. Call execute_booking_batch at most ONCE (optional, ≤5 items). Remaining pending days are booked by the client progress UI — do NOT call init_booking_job or execute_booking_batch again after success.
   5. If init_booking_job returns job_already_done, tell the user all meetings are already booked — never re-initialize or show a new 0% progress job.
   6. Do NOT fire N separate create_event calls for multi-day jobs.
+  7. When booking progress shows 100% / "Booking complete" / pending=0, treat ALL items as on the calendar. NEVER call create_event or find_free_slots to "retry" or book one-by-one. If the user asks "are they booked?", answer YES from the job list.
+  8. A create_event conflict at the same time as a completed booking job usually means the slot is already yours — do not offer alternative slots unless the user asks to change the plan.
 
 FORBIDDEN: Never say "I'll let you know when done", "I'll inform you later", "I'll check back", or promise async follow-up. Only report bookings completed in this response.
 
 NEVER book one meeting then ask "shall I book the next?" — use the booking job flow.
 
 Single-day booking: one create_event after slot confirmation — immediate "Booked …" message.`;
+
+export const BULK_CANCEL_RULES = `## Bulk cancel / delete many (CRITICAL)
+For "cancel all this month/week", "delete everything listed", "clear my calendar for …":
+  1. Call list_events once for the stated range (server returns all pages).
+  2. ONE confirmation with count + range only (e.g. "Cancel all 34 events in May?"). When count > 7, do NOT paste every title in chat or voice.
+  3. After user confirms, call init_cancel_job with all event IDs (server expands from cache if you pass fewer).
+  4. Call execute_cancel_batch at most ONCE. Client SSE finishes the rest — do NOT call delete_event per event.
+  5. If init_cancel_job returns job_already_done, tell the user cancellations are already done.
+  6. NEVER say "I'll cancel one by one" or "I'll let you know when done".
+Single-event cancel: one match → delete_event immediately (no second confirmation).`;
 
 export const RESCHEDULE_WORKFLOW_RULES = `## Reschedule / move (mandatory order)
 1. identify_event(timeMin/timeMax for the stated day, timeHint + summaryHint from the user message).

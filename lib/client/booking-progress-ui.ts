@@ -1,9 +1,12 @@
 import type { BookingProgressSnapshot } from '@/types';
 
+import type { CancelProgressSnapshot } from '@/types';
+
 export type ProgressMessage = {
   role: string;
   content: string;
   bookingProgress?: BookingProgressSnapshot;
+  cancelProgress?: CancelProgressSnapshot;
   slots?: unknown[];
   events?: unknown[];
 };
