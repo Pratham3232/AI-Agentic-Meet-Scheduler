@@ -1,5 +1,5 @@
 import type { CancelJob, CancelProgressSnapshot, ConversationState } from '@/types';
-import { getCancelProgress } from '@/lib/agent/cancel-executor';
+import { getCancelProgress } from '@/lib/agent/cancel-progress';
 
 export function isCancelJobFinished(job: CancelJob | null): boolean {
   if (!job) return false;

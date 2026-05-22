@@ -1,5 +1,5 @@
 import type { BookingJob, BookingJobItem, BookingProgressSnapshot, ConversationState } from '@/types';
-import { getBookingProgress } from '@/lib/agent/booking-executor';
+import { getBookingProgress } from '@/lib/agent/booking-progress';
 
 function sameSlot(aStart: string, aEnd: string, bStart: string, bEnd: string): boolean {
   return aStart === bStart && aEnd === bEnd;

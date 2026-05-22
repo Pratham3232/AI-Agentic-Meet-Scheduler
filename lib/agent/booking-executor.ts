@@ -3,6 +3,7 @@ import { createEvent, listEvents, listEventsPaginated } from '@/lib/calendar/eve
 import { isSlotFree, eventsOverlappingRange } from '@/lib/calendar/slot-search';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import { entriesFingerprint } from '@/lib/agent/booking-days';
+import { getBookingProgress } from '@/lib/agent/booking-progress';
 import type { DebugLogger } from '@/lib/debug';
 import type {
   BookingJob,
@@ -237,27 +238,7 @@ export async function initBookingJob(
   };
 }
 
-export function getBookingProgress(job: BookingJob): BookingProgressSnapshot {
-  const total = job.items.length;
-  const booked = job.items.filter(i => i.status === 'booked').length;
-  const failed = job.items.filter(i => i.status === 'failed').length;
-  const skipped = job.items.filter(i => i.status === 'skipped').length;
-  const pending = job.items.filter(i => i.status === 'pending').length;
-  const finished = booked + failed + skipped;
-  const percent = total === 0 ? 100 : Math.round((finished / total) * 100);
-
-  return {
-    jobId: job.id,
-    status: job.status,
-    total,
-    booked,
-    failed,
-    pending,
-    skipped,
-    percent,
-    items: job.items,
-  };
-}
+export { getBookingProgress } from '@/lib/agent/booking-progress';
 
 function finalizeJobStatus(job: BookingJob): BookingJob {
   const pending = job.items.some(i => i.status === 'pending');

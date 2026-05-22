@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { getCancelProgress } from '@/lib/agent/cancel-progress';
 import { deleteEvent } from '@/lib/calendar/events';
 import { formatTimeSlot } from '@/lib/calendar/utils';
 import type { DebugLogger } from '@/lib/debug';
@@ -86,27 +87,7 @@ function buildItemsFromIds(
   });
 }
 
-export function getCancelProgress(job: CancelJob): CancelProgressSnapshot {
-  const total = job.items.length;
-  const cancelled = job.items.filter(i => i.status === 'cancelled').length;
-  const failed = job.items.filter(i => i.status === 'failed').length;
-  const skipped = job.items.filter(i => i.status === 'skipped').length;
-  const pending = job.items.filter(i => i.status === 'pending').length;
-  const finished = cancelled + failed + skipped;
-  const percent = total === 0 ? 100 : Math.round((finished / total) * 100);
-
-  return {
-    jobId: job.id,
-    status: job.status,
-    total,
-    cancelled,
-    failed,
-    pending,
-    skipped,
-    percent,
-    items: job.items,
-  };
-}
+export { getCancelProgress } from '@/lib/agent/cancel-progress';
 
 function finalizeCancelJobStatus(job: CancelJob): CancelJob {
   const pending = job.items.some(i => i.status === 'pending');
